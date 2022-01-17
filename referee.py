@@ -20,10 +20,8 @@ class Gammas:
         self.infer()
 
     def infer(self):
-        atoms = [g for g in self.core + self.invented if not g.tailtypes]
-        ops = [g for g in self.core + self.invented if g.tailtypes]
-        self.gammas = atoms + ops
-
+        # keep the ordering
+        self.gammas = self.core + self.invented
         self.bytype = defaultdict(list)
 
         for gind, g in enumerate(self):
@@ -46,13 +44,8 @@ class Gammas:
 
             self.gammas[gind] = Gamma(g.head, g.type, newtailtypes, forbidden, g.repr)
 
-        self.rbytype = {}
-        for tau, ginds in self.bytype.items():
-            self.rbytype[tau] = [self.gammas[gind] for gind in ginds]
-
-        self.views = {}
-        for tau in self.rbytype.keys():
-            self.views[tau] = self.view(tau)
+        self.rbytype = {tau: [self.gammas[gind] for gind in ginds] for tau, ginds in self.bytype.items()}
+        self.views = {tau: self.view(tau) for tau in self.bytype.keys()}
 
     def reset(self):
         self.invented = []
@@ -63,7 +56,7 @@ class Gammas:
         self.infer()
 
     def __getitem__(self, ind):
-        if isinstance(ind, int):
+        if isinstance(ind, (int, np.int64)):
             return self.gammas[ind]
 
         return self.gammas[self.index(ind)]
@@ -84,30 +77,44 @@ class Gammas:
     def view(self, tau: type):
         "returns view on Gt, mapping of ops, splits for each op, natoms, nops"
         inds = self.bytype[tau]
+        Gt = [self.gammas[ind] for ind in inds]
 
         # recover ind from view to real ind in G
-        mapping = {cind: ind for cind, ind in zip(count(), inds)}
+        # sort atoms first than ops
+        atominds = [gind for gind, g in zip(inds, Gt) if not g.tailtypes]
+        funcinds = [gind for gind, g in zip(inds, Gt) if g.tailtypes]
 
-        Gt = [self.gammas[ind] for ind in inds]
-        natoms, nops = getns(Gt)
+        natoms = len(atominds)
+        nfuncs = len(funcinds)
+
+        mapping = array(atominds + funcinds, dtype=int)
+
         # the number of splits for each non-atom
-        nsplitmap = array([len(self[i].tailtypes) for i in inds[natoms:]])
-        return Gt, mapping, nsplitmap, natoms, nops
+        nsplitmap = array([len(self[funcind].tailtypes) for funcind in funcinds])
+
+        strandlimit = []
+
+        for funcind in funcinds:
+            # max bound
+            limits = zeros(6, dtype=int)
+
+            base = max(2, nfuncs)
+
+            # ...
+            for tind, tailtype in enumerate(self[funcind].tailtypes):
+                if tailtype.startswith('<N'):
+                    natoms_in_n = 9
+
+                    limits[tind] = int(np.ceil(np.log(natoms_in_n) / np.log(base)))
+                else:
+                    limits[tind] = 10**3
+
+            strandlimit.append(limits)
+
+        return mapping, nsplitmap, array(strandlimit, dtype=int), natoms, nfuncs
 
     def __hash__(self):
         return len(self.invented)
-
-def getns(G: List[Gamma]) -> (int, int):
-    "gives nops, natoms for G"
-    nops, natoms = 0, 0
-
-    for g in G:
-        if not g.tailtypes:
-            natoms += 1
-        else:
-            nops += 1
-
-    return natoms, nops
 
 class Gm(NamedTuple):
     head: int
@@ -129,10 +136,37 @@ class Gm(NamedTuple):
 
         return f"({G[self.head].repr} {' '.join(map(str, self.tails))})"
 
-def length(g: Gm) -> int:
-    return 1 + sum(map(length, g.tails))
+G = Gammas([
+    Gamma(0, '<A>', repr='0'),
+    Gamma(1, '<N>', repr='1'),
+    Gamma(2, '<N>', repr='2'),
+    Gamma(3, '<N>', repr='3'),
+    Gamma(4, '<N>', repr='4'),
+    Gamma(5, '<N>', repr='5'),
+    Gamma(6, '<N>', repr='6'),
+    Gamma(7, '<N>', repr='7'),
+    Gamma(8, '<N>', repr='8'),
+    Gamma(9, '<N>', repr='9'),
+    Gamma(add, '<N>', ['<N>', '<N>'], [['inf'], ['inf', '1', '2', '3', '4', '5', '6', '7', '8']], repr='+'),
+    Gamma(divpi, '<A>', ['<N>', '<N>'], [['inf'], ['1', 'inf']], repr='π'),
+    Gamma(neg, '<A>', ['<A>'], [['-', '0']], repr='-'),
+    Gamma(omv, '<B>', ['<N>', '<A>', '<B>'], [['inf'], [], []], repr='mv'), # first f must resolve
+    Gamma(osx, '<B>', ['<B>', '<B>'], [['ø', 'savex'], ['ø']], repr='savex'),
+    Gamma(opu, '<B>', ['<B>', '<B>'], forbidden=[['penup', 'ø', 'loop', 'savex'], ['penup', 'ø']], repr='penup'),
+    Gamma(olp, '<B>', ['<N>', '<B>', '<B>'], [['1'], ['ø', 'loop'], ['loop']], repr='loop'),
+    Gamma([], '<B>', repr='ø'),
+    Gamma(stage, '<SS>', ['<B>'], repr='R')
+], type='<SS>')
 
 @lru_cache(maxsize=1 << 15)
+def length(g: Gm) -> int:
+    if isinstance(g, str):
+        return 1
+
+    return 1 + sum(map(length, g.tails))
+# ■ ~
+
+# @lru_cache(maxsize=1 << 15)
 def evalg(G, args, g):
     # debruijn index
     if isinstance(g.head, int) and g.head < 0:
@@ -152,39 +186,24 @@ def evalg(G, args, g):
 
     return gamma.head(*tails)
 
-G = Gammas([
-    Gamma(1, '<N>', repr='1'),
-    Gamma(2, '<N>', repr='2'),
-    Gamma(3, '<N>', repr='3'),
-    Gamma(4, '<N>', repr='4'),
-    Gamma(5, '<N>', repr='5'),
-    Gamma(20, '<N>', repr='inf'),
-    Gamma(add, '<N>', ['<N>', '<N>'], [['inf'], ['inf', '1', '2', '3', '4']], repr='+'),
-    Gamma(π/100, '<A>', repr='ε'),
-    Gamma(divpi, '<A>', ['<N>', '<N>'], [['inf'], ['1', 'inf']], repr='π'),
-    Gamma(neg, '<A>', ['<A>'], [['-']], repr='-'),
-    Gamma(omv, '<B>', ['<N>', '<A>', '<B>'], [['inf'], [], []], repr='mv'),
-    Gamma(opu, '<B>', ['<B>', '<B>'], forbidden=[['penup', 'ø', 'loop', 'savex'], ['penup', 'ø']], repr='penup'),
-    Gamma(olp, '<B>', ['<N>', '<B>', '<B>'], [['1'], ['ø', 'loop'], ['loop']], repr='loop'),
-    Gamma([(0.0, 0.0)], '<B>', repr='ø'),
-    Gamma(stage, '<SS>', ['<B>'], repr='R')
-], type='<SS>')
-
+# ■ ~
 
 @njit
-def fancysplit(base: int, nsplitmap: np.ndarray, n: int):
+def fancysplit(base: int, nsplitmap, strandlimit, n: int):
     n, op = divmod(n, base)
 
     ind = 0
     nsplits = nsplitmap[op]
+    limits = strandlimit[op]
+
     numbers = [0] * nsplits
     while n > 0:
         n, bit = divmod(n, base)
 
         nbit, strand = divmod(ind, nsplits)
 
-        # if nbit > strandlimit[strand]:
-        #     strand = (strand + 1) % nsplits
+        if nbit >= limits[strand]:
+            strand = (strand + 2) % nsplits
 
         numbers[strand] += bit * base ** nbit
 
@@ -193,14 +212,19 @@ def fancysplit(base: int, nsplitmap: np.ndarray, n: int):
     return [op] + numbers
 
 @njit
-def singlesplit(nsplits: int, n: int):
+def singlesplit(nsplits: int, limits, n: int):
     ind = 0
     base = 2
     numbers = [0] * nsplits
+
     while n > 0:
         n, bit = divmod(n, base)
 
         nbit, strand = divmod(ind, nsplits)
+
+        if nbit > limits[strand]:
+            strand = (strand + 1) % nsplits
+
         numbers[strand] += bit * base ** nbit
 
         ind += 1
@@ -209,7 +233,7 @@ def singlesplit(nsplits: int, n: int):
 
 @lru_cache(maxsize=1 << 15)
 def maketree(G: Gammas, tau: type, n: int) -> Gm:
-    Gt, mapping, nsplitmap, natoms, nops = G.views[tau]
+    mapping, nsplitmap, strandlimit, natoms, nops = G.views[tau]
 
     if n < natoms:
         return Gm(mapping[n])
@@ -217,16 +241,16 @@ def maketree(G: Gammas, tau: type, n: int) -> Gm:
     # underflowing base 2
     if nops < 2:
         head = mapping[natoms]
-        tails = singlesplit(nsplitmap[0], n-natoms)
+        tails = singlesplit(nsplitmap[0], strandlimit[0], n-natoms)
     else:
-        head, *tails = fancysplit(nops, nsplitmap, n-natoms)
+        head, *tails = fancysplit(nops, nsplitmap, strandlimit, n-natoms)
         head = mapping[head + natoms]
 
     tailtypes = G[head].tailtypes
+
     return Gm(head, tuple([maketree(G, tau, n) for tau, n in zip(tailtypes, tails)]))
 
 from gast import parse
-
 
 def interpret(G, ast):
     # redundant parens
@@ -284,98 +308,23 @@ def flatten(xs):
 def allcombinations(xs):
     return flatten(combinations(xs, n) for n in range(len(xs) + 1))
 
-def prerelease(G, t):
-    L = len(t.tails)
-    trees = []
-
-    for holeinds in allcombinations(range(L)):
-        tails = copy(G[t.head].tailtypes)
-
-        tailinds = set(range(L)) - set(holeinds)
-        allsubtrees = [prerelease(G, t.tails[tind]) for tind in tailinds]
-
-        for subtrees in itertools.product(*allsubtrees):
-            newtails = copy(tails)
-            for ind, st in zip(tailinds, subtrees):
-                newtails[ind] = st
-
-            g = Gm(t.head, tuple(newtails))
-            trees.append(g)
-
-    return trees
-
-def release(G, g):
+def genrelease(G, g):
     if not g.tails:
-        return g, G[g.head].type
+        yield g
+        yield G[g.head].type
+        return
 
-    ghosttails = [release(G, tail) for tail in g.tails]
-    ghosts = [G[g.head].type]
+    yield G[g.head].type
+    ghosttails = [genrelease(G, tail) for tail in g.tails]
 
     for subtrees in product(*ghosttails):
-        ghosts.append(Gm(g.head, tuple(subtrees)))
-
-    return ghosts
+        yield Gm(g.head, tuple(subtrees))
 
 def depth(g):
     if not g.tails:
         return 0
 
     return 1 + max(depth(tail) for tail in g.tails)
-
-def forcematch(G, st, t):
-    if st.head != t.head:
-        return []
-
-    if not st.tails or not t.tails:
-        return [st]
-
-    matches = set()
-    L = len(st.tails)
-
-    # free tails by holes
-    for holeinds in allcombinations(range(L)):
-        tails = deepcopy(G[st.head].tailtypes)
-
-        tailinds = set(range(L)) - set(holeinds)
-
-        # expect keep tails recursively which are partially equal
-        allmatches = [forcematch(G, st.tails[tind], t.tails[tind]) for tind in tailinds]
-
-        for match in itertools.product(*allmatches):
-            newtails = deepcopy(tails)
-            for m, ind in zip(match, tailinds):
-                newtails[ind] = m
-
-            g = Gm(st.head, tuple(newtails))
-            matches.add(g)
-
-    return matches
-
-assert len(forcematch(GN, P(GN, "(+ 1 1)"), P(GN, "(+ 1 1)"))) == 4
-assert len(forcematch(GN, P(GN, "(+ 1 1)"), P(GN, "(+ 1 (+ 1 1))"))) == 2
-assert len(forcematch(GN, P(GN, "(+ (+ 1 1) 1)"), P(GN, "(+ 1 (+ 1 1))"))) == 1
-
-def countmatches(G, matches, st, t):
-    if not st.tails or not t.tails:
-        return
-
-    if st.head == t.head:
-        for match in forcematch(G, st, t):
-            matches[match] += 1
-
-    for tail in t.tails:
-        countmatches(G, matches, st, tail)
-
-matches = defaultdict(int)
-countmatches(GN, matches, P(GN, "(+ 1 (+ 1 1))"), P(GN, "(+ 1 (+ (+ 1 1) (+ 1 1)))"))
-
-assert matches[P(GN, '(+ 1 (+ <N> <N>))')] == 1
-assert matches[P(GN, '(+ <N> <N>)')] == 4
-assert matches[P(GN, '(+ 1 <N>)')] == 3
-assert matches[P(GN, '(+ <N> (+ <N> <N>))')] == 2
-assert matches[P(GN, '(+ <N> (+ 1 <N>))')] == 1
-assert matches[P(GN, '(+ <N> (+ <N> 1))')] == 1
-assert matches[P(GN, '(+ <N> (+ 1 1))')] == 1
 
 @lru_cache
 def lent(t):
@@ -408,21 +357,57 @@ assert isequalhole(Gm(1, ('1.t0', Gm(2))), Gm(1, (Gm(1), Gm(2))))
 assert isequalhole(Gm(1, (Gm(1, (Gm(2), )), Gm(2))), Gm(1, (Gm(1, (Gm(2), )), Gm(2))))
 assert not isequalhole(Gm(1, (Gm(1, (Gm(2), '1.t1')), Gm(2))), Gm(1, (Gm(1, (Gm(1), Gm(2))), Gm(2))))
 
-def rewrite(source, match, target):
+
+def extractargs(t, tholed, args):
+    if not tholed.tails:
+        return
+
+    for tind, (tailholed, tail) in enumerate(zip(tholed.tails, t.tails)):
+        if isinstance(tailholed, str):
+            args.append(tail)
+        else:
+            extractargs(tail, tailholed, args)
+
+tr = lambda g: P(G, g)
+
+args = []
+extractargs(tr('(mv (+ 1 1) (π 1 2) ø)'), tr('(mv (+ 1 <N>) (π 1 <N>) <B>)'), args)
+assert args == [tr('1'), tr('2'), tr('ø')]
+
+def rewrite(source, match, target, withargs=False):
     if not source.tails:
         return source
 
-    if isequal(source, match):
-        return target
+    if isequalhole(source, match):
+        if withargs:
+            args = []
+            extractargs(source, match, args)
+
+            # again reversed for - access
+            return Gm(target.head, tuple(reversed(args)))
+
+        return Gm(target.head)
 
     newtails = [None] * len(source.tails)
     for tind, tail in enumerate(source.tails):
         if isequalhole(tail, match):
-            newtails[tind] = target
+            if withargs:
+                args = []
+                extractargs(tail, match, args)
+                newtails[tind] = Gm(target.head, tuple(reversed(args)))
+            else:
+                newtails[tind] = target
         else:
-            newtails[tind] = rewrite(tail, match, target)
+            newtails[tind] = rewrite(tail, match, target, withargs=withargs)
 
     return source._replace(tails=tuple(newtails))
+
+t = P(G, "(+ (+ 1 1) 1)")
+nt = rewrite(t, P(G, "1"), P(G, "(+ 1 1)"))
+nt = rewrite(nt, P(G, "(+ 1 1)"), P(G, "1"))
+assert isequal(t, nt)
+
+nt = rewrite(t, P(G, "(+ 1 <N>)"), Gm(0), withargs=True)
 
 def forceholes(t, tailtypes=None):
     if not t.tails:
@@ -441,69 +426,102 @@ def forceholes(t, tailtypes=None):
 
     return t._replace(tails=tuple(newtails))
 
-# ■ ~
-
 from fontrender import alfbet
 X = alfbet.astype(np.int8)
 
+iimshow = lambda x: imshow(x, interpolation=None, cmap='hot')
+
+def outcompare(x, ax):
+    diff = x - ax
+
+    nnotcovered = len(diff[diff > 0])
+    nredundant = len(diff[diff < 0])
+    npoints = len(x[x > 0])
+
+    return nnotcovered, nredundant, npoints, diff
+
+def plotz(Z, ind=0):
+    canvas = zeros(Z[0].x.shape, np.int8)
+
+    N = len(Z)
+    fig, axs = pyplot.subplots(N, 1, figsize=(32, N * 4))
+
+    totalerror = sum(z.error for z in Z)
+
+    for z, ax in zip(Z, axs):
+        brusheval(G, canvas, z.g)
+
+        canvas = np.roll(canvas, (3, 4), axis=(0, 1))
+        original = np.roll(z.x, (3, 4), axis=(0, 1))
+
+        nnotcovered, nredundant, npoints, diff = outcompare(original, canvas)
+
+        im = np.hstack((canvas, original, diff))
+
+        ax.imshow(im, interpolation=None, cmap='hot', vmin=-1, vmax=1)
+        ax.grid(None)
+        ax.axis('off')
+        ax.tick_params(left=False, bottom=False, labelbottom=False, labelleft=False)
+
+        title = f"covered {npoints - nnotcovered}/{npoints} + extra {nredundant} totaling @{z.error}"
+        ax.set_title(f"{title}\n{z.g}", size=24, y=1.05)
+        print(title)
+
+    suptitle = f'({ind}) Total error = {totalerror}'
+    fig.suptitle(suptitle, y=0.9, size=24)
+    print(suptitle)
+
+    pyplot.subplots_adjust(left=0.0, right=1, hspace=0.5)
+    savefig(f"stash/z{ind}.png")
 
 @dataclass
 class Beam:
     x: np.ndarray
-    ax: np.ndarray = None
     error: float = np.inf
-    tree: Gm = None
+    g: Gm = None
 
 class H(NamedTuple):
-    nc: int
+    kalon: int
     count: int
-    tree: Gm
+    g: Gm
 
     def __lt__(self, o):
-        return self.nc < o.nc
+        return self.kalon < o.kalon
 
-def brusheval(G, im, tree):
-    im.fill(0)
-    evalg(G, (), tree)(im)
+def brusheval(G, canvas, g):
+    canvas.fill(0)
+    evalg(G, (), g)(canvas)
+    return canvas.copy()
 
 @njit
 def compare(x, ax):
     return np.abs(x - ax).sum()
 
 def explore(G, X, Z, ns=(0, 10**6)):
+    ng = (ns[1] - ns[0]) // 10
     im = zeros(X[0].shape, np.int8)
 
+    c = 0
     stime = time()
-    tbar = trange(*ns)
+    tbar = range(*ns)
     for n in tbar:
-        tree = maketree(G, G.type, n=n)
-        brusheval(G, im, tree)
+        g = maketree(G, G.type, n=n)
+        im.fill(0)
+        evalg(G, (), g)(im)
 
         for z in Z:
             error = compare(z.x, im)
 
-            if error < z.error or (error == z.error and length(tree) < length(z.tree)):
+            if error < z.error or (error == z.error and length(g) < length(z.g)):
                 z.error = error
-                z.ax = im.copy()
-                z.tree = tree
+                z.g = g
+
+        c += 1
+
+        if n % ng == 0:
+            print(f'{g} {c / (time() - stime):.0f}/s')
 
     return Z
-
-def plotz(Z, ind=0):
-    N = len(Z)
-    fig, axs = pyplot.subplots(N, 1, figsize=(40, 20))
-
-    for z, ax in zip(Z, axs):
-        im = np.hstack((z.x, z.ax))
-        ax.imshow(im, cmap='hot', interpolation='bicubic')
-        ax.grid(None)
-        ax.axis('off')
-        ax.tick_params(left=False, bottom=False, labelbottom=False, labelleft=False)
-        ax.set_title(f"[{z.error}] {z.tree}", size=18, y=1.025, fontfamily='IBM Plex Sans')
-
-    pyplot.subplots_adjust(left=0.0, right=1, hspace=0.4)
-    savefig(f"stash/z{ind}.png")
-
 
 def multicore(nocores, fn, args):
     if ncores == 1:
@@ -522,98 +540,179 @@ def multicore(nocores, fn, args):
 
     return out
 
+def isequalholesub(ghost, tree):
+    if ghost.head != tree.head:
+        return False
+
+    for g, t in zip(ghost.tails, tree.tails):
+        if isinstance(g, str):
+            continue
+
+        if not isequalholesub(g, t):
+            return False
+
+    return True
+
+def biggerlength(g, n):
+    qq = [g]
+
+    while qq:
+        x = qq.pop(0)
+        n -= 1
+
+        if n < 0:
+            return True
+
+        if isinstance(x, str):
+            continue
+
+        for t in x.tails:
+            qq.append(t)
+
+    return False
+
 def countghosts(trees, alltrees):
     matches = defaultdict(int)
 
-    for ghost in flatten(release(G, tree) for tree in trees):
+    for ghost in releasetrees(trees):
         if isinstance(ghost, str) or not ghost.tails:
             continue
 
         for tree in alltrees:
-            if isequalhole(ghost, tree):
+            if isequalholesub(ghost, tree):
                 matches[ghost] += 1
 
     return matches
 
 def releasetrees(trees):
-    return set(flatten(release(G, tree) for tree in trees))
+    return flatten(genrelease(G, tree) for tree in trees)
+
+# ■ ~
 
 if __name__ == '__main__':
-    shutil.rmtree('stash')
-    os.mkdir('stash')
+    faststart = False
+    ncores = os.cpu_count() // 2
+    batch = 1 * 10**7
 
-    ncores = 1
-    batch = 10**6
+    if ncores == 4:
+        ncores = 1
+        batch = 1 * 10**6
+    else:
+        faststart = False
+
+    if not faststart:
+        shutil.rmtree('stash')
+        os.mkdir('stash')
 
     for ind in count():
-        size = (ind+1) * batch
+        if ind > 0 or not faststart:
+            size = (ind+1) * batch
 
-        Z = [Beam(x) for x in X]
+            Z = [Beam(x) for x in X]
 
-        nss = []
-        for jnd in range(ncores):
-            nss.append((jnd * size+1, ((jnd + 1) * size)))
+            nss = []
+            for jnd in range(ncores):
+                nss.append((jnd * size+1, ((jnd + 1) * size)))
 
-        manyZ = multicore(ncores, explore, zip(repeat(G), repeat(X), repeat(Z), nss))
+            manyZ = multicore(ncores, explore, zip(repeat(G), repeat(X), repeat(Z), nss))
 
-        if ncores > 1:
-            for nZ in manyZ:
-                for zind, (nz, z) in enumerate(zip(nZ, Z)):
-                    if nz.error < z.error or (nz.error == z.error and length(nz.tree) < length(z.tree)):
-                        Z[zind] = nz
+            if ncores > 1:
+                for nZ in manyZ:
+                    for zind, (nz, z) in enumerate(zip(nZ, Z)):
+                        if nz.error < z.error or (nz.error == z.error and length(nz.g) < length(z.g)):
+                            Z[zind] = nz
+            else:
+                Z = manyZ
+
+            pickle.dump(Z, open(f'stash/Z{ind}.pkl', 'wb'))
         else:
-            Z = manyZ
+            Z = pickle.load(open(f'stash/Z{ind}.pkl', 'rb'))
 
         plotz(Z, ind)
 
-        for z in Z:
-            print(f"[{z.error}] ~ {z.tree}")
+        # for R-case solely
+        trees = [z.g.tails[0] for z in Z]
 
-        trees = list(flatten(map(everysubtree, (z.tree for z in Z))))
+        while True:
+            Mx = sum(map(length, trees))
 
-        manymatches = multicore(ncores, countghosts, zip(coresplit(ncores, trees), repeat(trees)))
-        if ncores > 1:
-            matches = reduce(lambda acc, x: acc | x, manymatches)
-        else:
-            matches = manymatches
+            print(f'counting currently at {Mx=}...')
 
-        heap = []
+            stime = time()
 
-        for tree, c in tqdm(matches.items()):
-            if not isinstance(tree, Gm):
-                continue
+            subtrees = []
+            for st in flatten(map(everysubtree, trees)):
+                if biggerlength(st, 1) and not biggerlength(st, 36):
+                    subtrees.append(st)
 
-            n, nargs = lent(tree)
-            if n <= 1:
-                continue
-
-            nc = (n - nargs) * c
-            h = H(nc=nc, tree=tree, count=c)
-
-            if len(heap) < 10:
-                heapq.heappush(heap, h)
+            print(f'total subtrees: {len(subtrees)}')
+            manymatches = multicore(ncores, countghosts, zip(coresplit(ncores, subtrees), repeat(trees)))
+            if ncores > 1:
+                matches = reduce(lambda acc, x: acc | x, manymatches)
             else:
-                heapq.heappushpop(heap, h)
+                matches = manymatches
 
-        for h in heapq.nlargest(10, heap):
-            print(h)
+            print(f'took {time() - stime:.0f}s')
 
-        h = sorted(heap, reverse=True)[0]
+            heap = []
 
-        tailtypes = []
-        tree = forceholes(h.tree, tailtypes)
+            for candidate, c in tqdm(matches.items()):
+                if not isinstance(candidate, Gm):
+                    continue
 
-        if not tailtypes:
-            atom = evalg(G, (), tree)
-            g = Gamma(atom, G[tree.head].type, [], repr=f"a{len(G.invented)}")
-        else:
-            g = Gamma(tree, G[tree.head].type, list(reversed(tailtypes)), repr=f"f{len(G.invented)}")
+                n, nargs = lent(candidate)
+                if n <= 1:
+                    continue
 
-        print(f'adding {tree=} {tailtypes=} with pleasure of {nc=} & {h.count=}')
+                Mxg = Mx - c * (n - nargs - 1)
+                Mg = n
 
-        G.add(g)
+                kalon = (Mxg + Mg) / Mx
 
-        print(f'{G=}')
+                h = H(kalon=-kalon, g=candidate, count=c)
+
+                if len(heap) < 5:
+                    heapq.heappush(heap, h)
+                else:
+                    heapq.heappushpop(heap, h)
+
+            for h in heapq.nlargest(3, heap):
+                print(h)
+
+            h = sorted(heap, reverse=True)[0]
+
+            if h.kalon <= -1:
+                break
+
+            tailtypes = []
+            gbodywithholes = h.g
+            gbody = forceholes(gbodywithholes, tailtypes)
+
+            isatom = not tailtypes
+
+            if isatom:
+                atom = evalg(G, (), gbody)
+                gamma = Gamma(atom, G[gbody.head].type, [], repr=f"a{len(G.invented)}")
+            else:
+                gamma = Gamma(gbody, G[gbody.head].type, list(reversed(tailtypes)), repr=f"f{len(G.invented)}")
+
+            print(f'adding {gbody=} {tailtypes=} with pleasure of {h.kalon=} & {h.count=}')
+            print(f'{gbodywithholes=} {gbody=}')
+
+            G.add(gamma)
+            G.infer()
+            gind = len(G)-1
+
+            canvas = zeros(Z[0].x.shape, int)
+            outbefore = [brusheval(G, canvas, Gm(G.index('R'), (g,))) for g in trees]
+
+            print('rewriting...')
+            trees = [rewrite(g, gbodywithholes, Gm(gind), withargs=not isatom) for g in trees]
+            outafter = [brusheval(G, canvas, Gm(G.index('R'), (g,))) for g in trees]
+
+            for ind, (outa, outb) in enumerate(zip(outbefore, outafter)):
+                if (outa - outb).sum() != 0:
+                    raise ValueError(f'bad rewrite @ {trees[ind]}')
 
         for g in G.invented:
             print(f'{g} {g.head} : {" -> ".join(g.tailtypes)} -> {g.type}')
