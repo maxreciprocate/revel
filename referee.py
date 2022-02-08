@@ -1,5 +1,8 @@
 from importblob import *
 from brush import *
+from q import *
+
+# ■ ~
 
 class Gamma(NamedTuple):
     head: int
@@ -19,33 +22,42 @@ class Gammas:
 
         self.infer()
 
-    def infer(self):
+    def infer(self, Q=None):
         # keep the ordering
         self.gammas = self.core + self.invented
+        # tau -> [gind]
         self.bytype = defaultdict(list)
 
+        # fill type pool
         for gind, g in enumerate(self):
             self.bytype[g.type].append(gind)
 
-        for gind, g in enumerate(self.gammas):
+        # reconstruct gammas
+        for gind, g in enumerate(self):
             if not g.forbidden:
                 continue
 
             newtailtypes = []
-            for tailind, (tailtype, forbidden) in enumerate(zip(g.tailtypes, g.forbidden)):
-                if len(forbidden) == 0:
-                    newtailtypes.append(tailtype)
-                else:
-                    newbytype = list(filter(lambda ind: not self[ind].repr in forbidden, self.bytype[tailtype]))
-                    newtype = f"{tailtype[:-1]}:{g.repr}:{tailind}>"
 
-                    self.bytype[newtype] = newbytype
-                    newtailtypes.append(newtype)
+            for tind, (tailtype, forbidden) in enumerate(zip(g.tailtypes, g.forbidden)):
+                generictype = f"{tailtype.split(':')[0]}>" if ':' in tailtype else tailtype
+                # sieve forbidden ginds
+                ginds = [ind for ind in self.bytype[generictype] if not self[ind].repr in forbidden]
+                specifictype = f"{generictype[:-1]}:{g.repr}:{tind}>"
 
-            self.gammas[gind] = Gamma(g.head, g.type, newtailtypes, forbidden, g.repr)
+                self.bytype[specifictype] = ginds
+                newtailtypes.append(specifictype)
+
+            self.gammas[gind] = Gamma(g.head, g.type, newtailtypes, g.forbidden, g.repr)
 
         self.rbytype = {tau: [self.gammas[gind] for gind in ginds] for tau, ginds in self.bytype.items()}
-        self.views = {tau: self.view(tau) for tau in self.bytype.keys()}
+
+        if Q is None:
+            Q = {tau: -np.log2(np.exp(1)) * log(th.ones(len(gs))/len(gs)) for tau, gs in self.bytype.items()}
+
+        print(Q)
+
+        self.views = {tau: makeview(self, Q, tau) for tau in self.bytype.keys()}
 
     def reset(self):
         self.invented = []
@@ -53,7 +65,7 @@ class Gammas:
 
     def add(self, g):
         self.invented.append(g)
-        self.infer()
+        self.gammas = self.core + self.invented
 
     def __getitem__(self, ind):
         if isinstance(ind, (int, np.int64)):
@@ -74,89 +86,38 @@ class Gammas:
 
         return None
 
-    def view(self, tau: type):
-        "returns view on Gt, mapping of ops, splits for each op, natoms, nops"
-        inds = self.bytype[tau]
-        Gt = [self.gammas[ind] for ind in inds]
-
-        # recover ind from view to real ind in G
-        # sort atoms first than ops
-        atominds = [gind for gind, g in zip(inds, Gt) if not g.tailtypes]
-        funcinds = [gind for gind, g in zip(inds, Gt) if g.tailtypes]
-
-        natoms = len(atominds)
-        nfuncs = len(funcinds)
-
-        mapping = array(atominds + funcinds, dtype=int)
-
-        # the number of splits for each non-atom
-        nsplitmap = array([len(self[funcind].tailtypes) for funcind in funcinds])
-
-        strandlimit = []
-
-        for funcind in funcinds:
-            # max bound
-            limits = zeros(6, dtype=int)
-
-            base = max(2, nfuncs)
-
-            # ...
-            for tind, tailtype in enumerate(self[funcind].tailtypes):
-                if tailtype.startswith('<N'):
-                    natoms_in_n = 9
-
-                    limits[tind] = int(np.ceil(np.log(natoms_in_n) / np.log(base)))
-                else:
-                    limits[tind] = 10**3
-
-            strandlimit.append(limits)
-
-        return mapping, nsplitmap, array(strandlimit, dtype=int), natoms, nfuncs
-
     def __hash__(self):
         return len(self.invented)
+
 
 class Gm(NamedTuple):
     head: int
     tails: tuple = tuple()
 
     def __repr__(self):
-        # abstraction
-        if isinstance(self.head, Gm):
-            if self.tails:
-                return f"(λ[{self.head}]. {' '.join(map(str, self.tails))})"
+        return grepr(G, self)
 
-            return f"λ[{self.head}]"
+def grepr(G, g):
+    # abstraction
+    if isinstance(g, str):
+        return g
 
-        if isinstance(self.head, int) and self.head < 0:
-            return str(self.head)
+    if isinstance(g.head, Gm):
+        if g.tails:
+            return f"(λ[{g.head}]. {' '.join([grepr(G, t) for t in g.tails])})"
 
-        if not self.tails:
-            return G[self.head].repr
+        return f"λ[{g.head}]"
 
-        return f"({G[self.head].repr} {' '.join(map(str, self.tails))})"
+    if isinstance(g.head, int) and g.head < 0:
+        return str(g.head)
 
-G = Gammas([
-    Gamma(0, '<A>', repr='0'),
-    Gamma(1, '<N>', repr='1'),
-    Gamma(2, '<N>', repr='2'),
-    Gamma(3, '<N>', repr='3'),
-    Gamma(4, '<N>', repr='4'),
-    Gamma(5, '<N>', repr='5'),
-    Gamma(6, '<N>', repr='6'),
-    Gamma(7, '<N>', repr='7'),
-    Gamma(8, '<N>', repr='8'),
-    Gamma(9, '<N>', repr='9'),
-    Gamma(add, '<N>', ['<N>', '<N>'], [['inf'], ['inf', '1', '2', '3', '4', '5', '6', '7', '8']], repr='+'),
-    Gamma(divpi, '<A>', ['<N>', '<N>'], [['inf'], ['1', 'inf']], repr='π'),
-    Gamma(neg, '<A>', ['<A>'], [['-', '0']], repr='-'),
-    Gamma(omv, '<B>', ['<N>', '<A>', '<B>'], [['inf'], [], []], repr='mv'), # first f must resolve
-    Gamma(osx, '<B>', ['<B>', '<B>'], [['ø', 'savex'], ['ø']], repr='savex'),
-    Gamma(opu, '<B>', ['<B>', '<B>'], forbidden=[['penup', 'ø', 'loop', 'savex'], ['penup', 'ø']], repr='penup'),
-    Gamma(olp, '<B>', ['<N>', '<B>', '<B>'], [['1'], ['ø', 'loop'], ['loop']], repr='loop'),
-    Gamma([], '<B>', repr='ø'),
-    Gamma(stage, '<SS>', ['<B>'], repr='R')
-], type='<SS>')
+    if not g.tails:
+        return G[g.head].repr
+
+    return f"({G[g.head].repr} {' '.join([grepr(G, t) for t in g.tails])})"
+
+# ■ ~
+
 
 @lru_cache(maxsize=1 << 15)
 def length(g: Gm) -> int:
@@ -164,9 +125,9 @@ def length(g: Gm) -> int:
         return 1
 
     return 1 + sum(map(length, g.tails))
-# ■ ~
 
-# @lru_cache(maxsize=1 << 15)
+# TODO unhashable type list
+# @lru_cache(maxsize=1 << 20)
 def evalg(G, args, g):
     # debruijn index
     if isinstance(g.head, int) and g.head < 0:
@@ -185,8 +146,6 @@ def evalg(G, args, g):
         return evalg(G, tails, gamma.head)
 
     return gamma.head(*tails)
-
-# ■ ~
 
 @njit
 def fancysplit(base: int, nsplitmap, strandlimit, n: int):
@@ -222,7 +181,7 @@ def singlesplit(nsplits: int, limits, n: int):
 
         nbit, strand = divmod(ind, nsplits)
 
-        if nbit > limits[strand]:
+        if nbit >= limits[strand]:
             strand = (strand + 1) % nsplits
 
         numbers[strand] += bit * base ** nbit
@@ -231,7 +190,7 @@ def singlesplit(nsplits: int, limits, n: int):
 
     return numbers
 
-@lru_cache(maxsize=1 << 15)
+@lru_cache(maxsize=1 << 20)
 def maketree(G: Gammas, tau: type, n: int) -> Gm:
     mapping, nsplitmap, strandlimit, natoms, nops = G.views[tau]
 
@@ -247,8 +206,28 @@ def maketree(G: Gammas, tau: type, n: int) -> Gm:
         head = mapping[head + natoms]
 
     tailtypes = G[head].tailtypes
+    # print(n, tails)
 
     return Gm(head, tuple([maketree(G, tau, n) for tau, n in zip(tailtypes, tails)]))
+
+@lru_cache(maxsize=1 << 20)
+def growtree(G, tau, n):
+    masks, fnumber, nops, natoms, opmapping, atommapping = G.views[tau]
+
+    if n < natoms:
+        return Gm(atommapping[n])
+
+    assert nops > 0, f"there are not enough atoms to feed this {n}"
+
+    n -= natoms
+    opind = selectmask(nops, n, fnumber)
+
+    op = opmapping[opind]
+    ttaus = G[op].tailtypes
+
+    return Gm(op, tuple([growtree(G, ttau, selectmask(nops, n, mask))
+                         for mask, ttau in zip(masks[opind], ttaus)]))
+
 
 from gast import parse
 
@@ -280,15 +259,6 @@ def interpret(G, ast):
             return Gm(ind, tuple([interpret(G, tail) for tail in ast[1:]]))
         else:
             raise ValueError(f'What to do? Op/Atom "{ast[0]}" is not one of {G.gammas}')
-
-GN = Gammas([
-    Gamma(1, '<N>', repr='1'),
-    Gamma(add, '<N>', ['<N>', '<N>'], forbidden=[[], []], repr='+'),
-], type='<N>')
-
-P = lambda G, s: interpret(G, parse(s))
-
-assert P(GN, "(+ (+ 1 1) (+ 1 1))") == Gm(1, (Gm(1, (Gm(0), Gm(0))), Gm(1, (Gm(0), Gm(0)))))
 
 def everysubtree(t):
     qq = [t]
@@ -370,10 +340,6 @@ def extractargs(t, tholed, args):
 
 tr = lambda g: P(G, g)
 
-args = []
-extractargs(tr('(mv (+ 1 1) (π 1 2) ø)'), tr('(mv (+ 1 <N>) (π 1 <N>) <B>)'), args)
-assert args == [tr('1'), tr('2'), tr('ø')]
-
 def rewrite(source, match, target, withargs=False):
     if not source.tails:
         return source
@@ -401,13 +367,6 @@ def rewrite(source, match, target, withargs=False):
             newtails[tind] = rewrite(tail, match, target, withargs=withargs)
 
     return source._replace(tails=tuple(newtails))
-
-t = P(G, "(+ (+ 1 1) 1)")
-nt = rewrite(t, P(G, "1"), P(G, "(+ 1 1)"))
-nt = rewrite(nt, P(G, "(+ 1 1)"), P(G, "1"))
-assert isequal(t, nt)
-
-nt = rewrite(t, P(G, "(+ 1 <N>)"), Gm(0), withargs=True)
 
 def forceholes(t, tailtypes=None):
     if not t.tails:
@@ -451,8 +410,8 @@ def plotz(Z, ind=0):
     for z, ax in zip(Z, axs):
         brusheval(G, canvas, z.g)
 
-        canvas = np.roll(canvas, (3, 4), axis=(0, 1))
-        original = np.roll(z.x, (3, 4), axis=(0, 1))
+        canvas = np.roll(canvas, (3, 3), axis=(0, 1))
+        original = np.roll(z.x, (3, 3), axis=(0, 1))
 
         nnotcovered, nredundant, npoints, diff = outcompare(original, canvas)
 
@@ -505,7 +464,7 @@ def explore(G, X, Z, ns=(0, 10**6)):
     stime = time()
     tbar = range(*ns)
     for n in tbar:
-        g = maketree(G, G.type, n=n)
+        g = growtree(G, G.type, n=n)
         im.fill(0)
         evalg(G, (), g)(im)
 
@@ -519,7 +478,7 @@ def explore(G, X, Z, ns=(0, 10**6)):
         c += 1
 
         if n % ng == 0:
-            print(f'{g} {c / (time() - stime):.0f}/s')
+            print(f'{grepr(G, g)} {c / (time() - stime):.0f}/s')
 
     return Z
 
@@ -571,10 +530,10 @@ def biggerlength(g, n):
 
     return False
 
-def countghosts(trees, alltrees):
+def countghosts(trees, alltrees, G):
     matches = defaultdict(int)
 
-    for ghost in releasetrees(trees):
+    for ghost in releasetrees(G, trees):
         if isinstance(ghost, str) or not ghost.tails:
             continue
 
@@ -584,21 +543,37 @@ def countghosts(trees, alltrees):
 
     return matches
 
-def releasetrees(trees):
+def releasetrees(G, trees):
     return flatten(genrelease(G, tree) for tree in trees)
 
 # ■ ~
 
 if __name__ == '__main__':
+    L = 10
+    G = Gammas([
+        Gamma(0, '<A>', repr='0'),
+        *[Gamma(n, '<N>', repr=repr(n)) for n in range(1, L+1)],
+        Gamma(add, '<N>', ['<N>', '<N>'], [['inf'], ['inf', '1', '2', '3', '4', '5', '6', '7', '8', '9']], repr='+'),
+        Gamma(divpi, '<A>', ['<N>', '<N>'], forbidden=[['inf'], ['1', 'inf']], repr='π'),
+        Gamma(neg, '<A>', ['<A>'], [['-', '0']], repr='-'),
+        Gamma(omv, '<B>', ['<N>', '<A>', '<B>'], [['inf'], [], []], repr='mv'), # first f must resolve
+        Gamma(osx, '<B>', ['<B>', '<B>'], [['ø', 'savex'], ['ø']], repr='savex'),
+        Gamma(opu, '<B>', ['<B>', '<B>'], forbidden=[['penup', 'ø', 'loop', 'savex'], ['penup', 'ø']], repr='penup'),
+        Gamma(olp, '<B>', ['<N>', '<B>', '<B>'], [['1'], ['ø', 'loop'], ['loop']], repr='loop'),
+        Gamma([], '<B>', repr='ø'),
+        Gamma(stage, '<SS>', ['<B>'], [['ø']], repr='R')
+    ], type='<SS>')
+
+
     faststart = False
     ncores = os.cpu_count() // 2
-    batch = 1 * 10**7
+    batch = 1 * 10**5
 
     if ncores == 4:
-        ncores = 1
+        ncores = 4
         batch = 1 * 10**6
     else:
-        faststart = False
+        faststart = True
 
     if not faststart:
         shutil.rmtree('stash')
@@ -633,6 +608,9 @@ if __name__ == '__main__':
         # for R-case solely
         trees = [z.g.tails[0] for z in Z]
 
+        # TODO normalize
+        # G.reset()
+
         while True:
             Mx = sum(map(length, trees))
 
@@ -646,7 +624,7 @@ if __name__ == '__main__':
                     subtrees.append(st)
 
             print(f'total subtrees: {len(subtrees)}')
-            manymatches = multicore(ncores, countghosts, zip(coresplit(ncores, subtrees), repeat(trees)))
+            manymatches = multicore(ncores, countghosts, zip(coresplit(ncores, subtrees), repeat(trees), repeat(G)))
             if ncores > 1:
                 matches = reduce(lambda acc, x: acc | x, manymatches)
             else:
@@ -681,7 +659,7 @@ if __name__ == '__main__':
 
             h = sorted(heap, reverse=True)[0]
 
-            if h.kalon <= -1:
+            if h.kalon <= -0.95:
                 break
 
             tailtypes = []
@@ -694,13 +672,17 @@ if __name__ == '__main__':
                 atom = evalg(G, (), gbody)
                 gamma = Gamma(atom, G[gbody.head].type, [], repr=f"a{len(G.invented)}")
             else:
+                name = f"f{len(G.invented)}"
+                if not '<B>' in tailtypes:
+                    newforbidden = [G['R'].forbidden[0] + [name]]
+                    G.core[G.index('R')] = G['R']._replace(forbidden=newforbidden)
+
                 gamma = Gamma(gbody, G[gbody.head].type, list(reversed(tailtypes)), repr=f"f{len(G.invented)}")
 
             print(f'adding {gbody=} {tailtypes=} with pleasure of {h.kalon=} & {h.count=}')
             print(f'{gbodywithholes=} {gbody=}')
 
             G.add(gamma)
-            G.infer()
             gind = len(G)-1
 
             canvas = zeros(Z[0].x.shape, int)
@@ -716,3 +698,5 @@ if __name__ == '__main__':
 
         for g in G.invented:
             print(f'{g} {g.head} : {" -> ".join(g.tailtypes)} -> {g.type}')
+
+        G.infer()
