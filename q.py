@@ -10,8 +10,11 @@ def binbase(base, n):
 
     return ''.join(reversed(out))
 
-lsoft = lambda ps: -np.log2(np.exp(1)) * F.log_softmax(ps.float(), -1)
-H = lambda ps: -(ps * np.log2(np.exp(1)) * log(ps)).sum()
+lsoft = lambda ps: -F.log_softmax(ps.float(), -1) / np.log(2)
+H = lambda ps: -(ps * log(ps) / np.log(2)).sum()
+
+def isgeneric(tau):
+    return ':' not in tau
 
 def nless(G, Q, tau, budget, unwrap=False):
     qs, tinds = Q[tau].sort()
@@ -79,7 +82,9 @@ def growtail(G, Q, base, ind, tails, budget, counts, nbits, sequence, budgets):
         nbits[ind] += 1
 
 def makeview(G, Q, tau: str):
+    if isgeneric(tau) and not tau == G.type: return
     print(tau)
+
     qs, tinds = Q[tau].sort()
     fnumber = 0
     foffset = None
@@ -110,8 +115,8 @@ def makeview(G, Q, tau: str):
 
             tails.append(list(zip(qs, ginds)))
 
-        counts = zeros(len(tails), int)
-        nbits = zeros(len(tails), int)
+        counts = zeros(len(tails), np.uint64)
+        nbits = zeros(len(tails), np.uint64)
         base = max(2, nops)
 
         sequence = []
@@ -120,7 +125,8 @@ def makeview(G, Q, tau: str):
         budget = 0
         budgets = []
 
-        while len(sequence) < 20:
+        sequencelength = np.log(10**9) / np.log(base)
+        while len(sequence) < sequencelength:
             budget += budgetstep
 
             for tind in range(len(tails)):
@@ -132,6 +138,9 @@ def makeview(G, Q, tau: str):
                 fdiff = np.diff(array(fqs))[0]
                 foffset = findfirst(lambda x: x > fdiff, budgets[::-1])
 
+                if foffset is None:
+                    foffset = len(sequence)
+
             if foffset == 0:
                 sequence.append(np.inf)
                 budgets.append(fdiff)
@@ -139,7 +148,7 @@ def makeview(G, Q, tau: str):
                 sequence.insert(-foffset, np.inf)
                 budgets.insert(-foffset, fdiff)
 
-        numbers = zeros(len(tails), int)
+        numbers = zeros(len(tails), np.uint64)
         for ind, tail in enumerate(sequence[::-1]):
             if np.isfinite(tail):
                 numbers[tail] += base ** ind
@@ -147,5 +156,6 @@ def makeview(G, Q, tau: str):
                 fnumber = base ** ind
 
         masks.append(list(numbers))
+        print(sequence)
 
     return [masks, fnumber, nops, natoms, opmapping, atommapping]
