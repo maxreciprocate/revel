@@ -3,6 +3,7 @@ from brush import *
 from q import *
 from yee import ImageEncoder
 from rich import print
+from gast import parse
 
 # ■ ~
 
@@ -11,6 +12,9 @@ class Gm(NamedTuple):
     tails: tuple = tuple()
 
     def __repr__(self):
+        global G
+        return grepr(G, self)
+
         if self.tails:
             return f"({self.head} {' '.join([repr(t) for t in self.tails])})"
 
@@ -66,7 +70,12 @@ class Gammas:
         if Q is None:
             Q = {tau: -np.log2(th.ones(len(gs))/len(gs)) for tau, gs in self.bytype.items()}
 
-        print(Q)
+        for tau in self.bytype.keys():
+            qs, sinds = Q[tau].sort()
+            qs = ap(lambda x: round(x, 1), qs.numpy())
+            gs = ap(lambda gind: G[gind].repr, np.atleast_1d(array(self.bytype[tau])[sinds]))
+
+            print(f'{tau} ~ {list(zip(gs, qs))}')
 
         self.views = {tau: makeview(self, Q, tau) for tau in self.bytype.keys()}
 
@@ -125,7 +134,7 @@ def length(g: Gm) -> int:
 
     return 1 + sum(map(length, g.tails))
 
-# TODO unhashable type list
+# TODO unhashable type list: tail <B> accepts [(...)]
 # @lru_cache(maxsize=1 << 20)
 def evalg(G, args, g):
     # debruijn index
@@ -205,7 +214,6 @@ def maketree(G: Gammas, tau: type, n: int) -> Gm:
         head = mapping[head + natoms]
 
     tailtypes = G[head].tailtypes
-    # print(n, tails)
 
     return Gm(head, tuple([maketree(G, tau, n) for tau, n in zip(tailtypes, tails)]))
 
@@ -226,9 +234,6 @@ def growtree(G, tau, n):
 
     return Gm(op, tuple([growtree(G, ttau, selectmask(nops, n, mask))
                          for mask, ttau in zip(masks[opind], ttaus)]))
-
-
-from gast import parse
 
 def interpret(G, ast):
     # redundant parens
@@ -377,6 +382,8 @@ def forceholes(t, tailtypes=None):
 
 from fontrender import alfbet
 X = alfbet.astype(np.int8)
+# from imagrender import imagrender
+# X = imagrender('imagery')
 
 iimshow = lambda x: imshow(x, interpolation=None, cmap='hot')
 
@@ -400,8 +407,8 @@ def plotz(G, Z, ind=0):
     for z, ax in zip(Z, axs):
         brusheval(G, canvas, z.g)
 
-        canvas = np.roll(canvas, (3, 3), axis=(0, 1))
-        original = np.roll(z.x, (3, 3), axis=(0, 1))
+        canvas = np.roll(canvas, (2, 2), axis=(0, 1))
+        original = np.roll(z.x, (2, 2), axis=(0, 1))
 
         nnotcovered, nredundant, npoints, diff = outcompare(original, canvas)
 
@@ -413,15 +420,15 @@ def plotz(G, Z, ind=0):
         ax.tick_params(left=False, bottom=False, labelbottom=False, labelleft=False)
 
         title = f"covered {npoints - nnotcovered}/{npoints} + extra {nredundant} totaling @{z.error}"
-        ax.set_title(f"{title}\n{grepr(G, z.g)}", size=24, y=1.05)
+        ax.set_title(f"{title}\n{grepr(G, z.g)}", size=24, y=1.15)
         print(title)
 
-    suptitle = f'({ind}) Total error = {totalerror}'
-    fig.suptitle(suptitle, y=0.9, size=24)
+    suptitle = f'Epoch #{ind} Total error = {totalerror}'
+    fig.suptitle(suptitle, size=24)
     print(suptitle)
 
-    pyplot.subplots_adjust(left=0.0, right=1, hspace=0.5)
-    savefig(f"stash/z{ind}.png")
+    pyplot.subplots_adjust(left=0.0, right=1, hspace=0.9)
+    savefig(f"stash/{ind}.png")
 
 @dataclass
 class Beam:
@@ -454,7 +461,12 @@ def explore(G, X, Z, ns=(0, 10**6)):
     stime = time()
     tbar = range(*ns)
     for n in tbar:
-        g = growtree(G, G.type, n=n)
+        try:
+            g = growtree(G, G.type, n=n)
+        except RecursionError:
+            print(f'too much recur {n=}')
+            continue
+
         im.fill(0)
         evalg(G, (), g)(im)
 
@@ -520,6 +532,35 @@ def biggerlength(g, n):
 
     return False
 
+def pevalg(G, args, g):
+    if isinstance(g.head, int) and g.head < 0:
+        return args[g.head]
+
+    if not g.tails:
+        return g
+
+    return g._replace(tails=tuple([pevalg(G, args, tg) for tg in g.tails]))
+
+def isnormal(G, g):
+    if g.head >= len(G.core):
+        return False
+
+    return all(isnormal(G, tg) for tg in g.tails)
+
+def normalize(G, g):
+    if g.head >= len(G.core):
+        # get hiddentail
+        body = deepcopy(G[g.head].head)
+        # insert tails
+        body = pevalg(G, g.tails, body)
+
+        while not isnormal(G, body):
+            body = normalize(G, body)
+
+        return body
+
+    return g._replace(tails=tuple([normalize(G, tg) for tg in g.tails]))
+
 def countghosts(trees, alltrees, G):
     matches = defaultdict(int)
 
@@ -559,7 +600,11 @@ def dream(G, trees, shape):
 
         canvas = np.zeros((bsize, *shape), dtype=np.float32)
         for ind in range(bsize):
-            evalg(G, (), gs[ind])(canvas[ind])
+            try:
+                evalg(G, (), gs[ind])(canvas[ind])
+            except TypeError:
+                print(gs[ind])
+                raise
 
         images = as_tensor(canvas, device=device).view(bsize, 1, *shape)
         logits = enc(images).view(bsize, len(G), len(spectaus))
@@ -573,7 +618,7 @@ def dream(G, trees, shape):
         opt.zero_grad(); slogp.backward(); opt.step()
         tbar.set_description(f'{slogp/bsize=:.2f}')
 
-    xs = X[randint(len(X), size=len(X) // 10)]
+    xs = X[:-3]
     xs = as_tensor(xs, dtype=th.float32, device=device).view(-1, 1, *shape)
 
     with th.no_grad():
@@ -590,17 +635,15 @@ def dream(G, trees, shape):
     return Q
 
 if __name__ == '__main__':
-    L = 10
+    L = 15
     G = Gammas([
-        Gamma(0, '<A>', repr='0'),
-        *[Gamma(n, '<N>', repr=repr(n)) for n in range(1, L+1)],
-        Gamma(add, '<N>', ['<N>', '<N>'], [['inf'], ['inf', '1', '2', '3', '4', '5', '6', '7', '8', '9']], repr='+'),
-        Gamma(divpi, '<A>', ['<N>', '<N>'], forbidden=[['inf'], ['1', 'inf']], repr='π'),
-        Gamma(neg, '<A>', ['<A>'], [['-', '0']], repr='-'),
-        Gamma(omv, '<B>', ['<N>', '<A>', '<B>'], [['inf'], [], []], repr='mv'), # first f must resolve
+        Gamma(getangle, '<A>', ['<N>'], repr='π'),
+        *[Gamma(n, '<N>', repr=repr(n)) for n in range(L+1)],
+        Gamma(add, '<N>', ['<N>', '<N>'], [['0'], [repr(n) for n in range(L)]], repr='+'),
+        Gamma(omv, '<B>', ['<N>', '<A>', '<B>'], [[], [], []], repr='mv'), # first f must resolve
         Gamma(osx, '<B>', ['<B>', '<B>'], [['ø', 'savex'], ['ø']], repr='savex'),
         Gamma(opu, '<B>', ['<B>', '<B>'], forbidden=[['penup', 'ø', 'loop', 'savex'], ['penup', 'ø']], repr='penup'),
-        Gamma(olp, '<B>', ['<N>', '<B>', '<B>'], [['1'], ['ø', 'loop'], ['loop']], repr='loop'),
+        Gamma(olp, '<B>', ['<N>', '<B>', '<B>'], [['0', '1'], ['ø', 'loop'], ['loop']], repr='loop'),
         Gamma([], '<B>', repr='ø'),
         Gamma(stage, '<SS>', ['<B>'], [['ø']], repr='R')
     ], type='<SS>')
@@ -613,18 +656,21 @@ if __name__ == '__main__':
 
     if ncores == 4:
         batch = 1 * 10**5
+        ncores = 4
         faststart = False
     else:
         batch = 1 * 10**7
-        faststart = True
+        faststart = False
 
     if not faststart:
         shutil.rmtree('stash')
         os.mkdir('stash')
 
     for ind in count():
-        if ind > 0 or not faststart:
-            size = (ind+1) * batch
+        if faststart and ind == 0:
+            Z = pickle.load(open(f'stash/Z{ind}.pkl', 'rb'))
+        else:
+            size = (3*ind+1) * batch
 
             Z = [Beam(x) for x in X]
 
@@ -632,6 +678,7 @@ if __name__ == '__main__':
             for jnd in range(ncores):
                 nss.append((jnd * size+1, ((jnd + 1) * size)))
 
+            print(f'exploring a forest spanning 10^{int(np.log10(size))} in search for {len(X)} lone pines')
             manyZ = multicore(ncores, explore, zip(repeat(G), repeat(X), repeat(Z), nss))
 
             if ncores > 1:
@@ -643,16 +690,29 @@ if __name__ == '__main__':
                 Z = manyZ
 
             pickle.dump(Z, open(f'stash/Z{ind}.pkl', 'wb'))
-        else:
-            Z = pickle.load(open(f'stash/Z{ind}.pkl', 'rb'))
+            pickle.dump(G, open(f'stash/G{ind}.pkl', 'wb'))
 
         plotz(G, Z, ind)
 
-        # for R-case solely
-        trees = [z.g.tails[0] for z in Z]
+        trees = [z.g for z in Z]
+        # normalize
+        canvas = zeros(X[0].shape)
+        outbefore = [brusheval(G, canvas, g) for g in trees]
 
-        # TODO normalize
-        # G.reset()
+        ntrees = [normalize(G, g) for g in trees]
+        outafter = [brusheval(G, canvas, g) for g in ntrees]
+
+        for ind, (outa, outb) in enumerate(zip(outbefore, outafter)):
+            if not np.all(outa == outb):
+                raise ValueError(f'bad rewrite @ {trees[ind]} <> {ntrees[ind]}')
+
+        # strip render stage
+        trees = [g.tails[0] for g in ntrees]
+
+        for g in trees:
+            print(grepr(G, g))
+
+        G.reset()
 
         while True:
             Mx = sum(map(length, trees))
@@ -673,8 +733,6 @@ if __name__ == '__main__':
             else:
                 matches = manymatches
 
-            print(f'took {time() - stime:.0f}s')
-
             heap = []
 
             for candidate, c in tqdm(matches.items()):
@@ -682,7 +740,8 @@ if __name__ == '__main__':
                     continue
 
                 n, nargs = lent(candidate)
-                if n <= 1:
+                # temporarily disable constants
+                if n <= 1 or nargs == 0:
                     continue
 
                 Mxg = Mx - c * (n - nargs - 1)
@@ -716,14 +775,10 @@ if __name__ == '__main__':
                 gamma = Gamma(atom, G[gbody.head].type, [], repr=f"a{len(G.invented)}")
             else:
                 name = f"f{len(G.invented)}"
-                if not '<B>' in tailtypes:
-                    newforbidden = [G['R'].forbidden[0] + [name]]
-                    G.core[G.index('R')] = G['R']._replace(forbidden=newforbidden)
 
                 gamma = Gamma(gbody, G[gbody.head].type, list(reversed(tailtypes)), repr=f"f{len(G.invented)}")
 
-            print(f'adding {grepr(G, gbody)=} {tailtypes=} with pleasure of {h.kalon=} & {h.count=}')
-            print(f'{grepr(G, gbodywithholes)=} {grepr(G, gbody)=}')
+            print(f'growing new leaf {grepr(G, gbodywithholes)} with tails {tailtypes} @{-h.kalon:.2f} #{h.count}')
 
             G.add(gamma)
             gind = len(G)-1
@@ -731,7 +786,6 @@ if __name__ == '__main__':
             canvas = zeros(Z[0].x.shape, int)
             outbefore = [brusheval(G, canvas, Gm(G.index('R'), (g,))) for g in trees]
 
-            print('rewriting...')
             trees = [rewrite(g, gbodywithholes, Gm(gind), withargs=not isatom) for g in trees]
             outafter = [brusheval(G, canvas, Gm(G.index('R'), (g,))) for g in trees]
 
@@ -745,9 +799,10 @@ if __name__ == '__main__':
         G.infer()
         trees = [Gm(G.index('R'), (g,)) for g in trees]
 
+        # i need to sample, but do i need to do it with a uniform logp?
+        G.solder()
         Q = dream(G, trees, X[0].shape)
         G.solder(Q)
-        print(G.rbytype)
 
         progeny = []
         for n in range(1000):
@@ -759,3 +814,5 @@ if __name__ == '__main__':
 
             if n < 100:
                 print(grepr(G, g))
+
+            evalg(G, (), g)
