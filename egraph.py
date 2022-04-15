@@ -13,6 +13,12 @@ class ENode(NamedTuple):
     head: int
     tails: tuple = tuple()
 
+    def __repr__(self):
+        if len(self.tails) == 0:
+            return f'<{self.head}>'
+
+        return f'<{self.head} {" ".join(map(repr, self.tails))}>'
+
 class EGraph:
     def __init__(self, cost=lambda egraph, enode: 0, ctxfn=lambda enode: None):
         self.parents = []
@@ -26,6 +32,7 @@ class EGraph:
     def add(self, value=None):
         self.parents.append(-1)
         self.values.append({value})
+        ctx = self.ctxfn(value)
         self.analyses.append([self.cost(self, value), value, self.ctxfn(value)])
         return len(self) - 1
 
@@ -55,10 +62,16 @@ class EGraph:
         self.values[broot] = self.values[broot] | self.values[aroot]
         self.values[aroot] = set()
 
+        # ctx should remain the same
+        bctx = self.analyses[broot][2]
+        actx = self.analyses[aroot][2]
+
+        ctx = bctx or actx or None
+
         if self.analyses[broot][0] > self.analyses[aroot][0]:
             self.analyses[broot] = self.analyses[aroot]
-            # keep the ctx
-            self.analyses[broot][2] = self.analyses[aroot][2]
+
+        self.analyses[broot][2] = ctx
 
         if isinstance(self.analyses[aroot][2], int):
             self.analyses[broot][2] = self.analyses[aroot][2]
@@ -77,7 +90,7 @@ class EGraph:
         eclass = set()
 
         for enode in self.values[id]:
-            self.hashcons.pop(enode)
+            self.hashcons.pop(enode, None)
             enode = self.canonize(enode)
             self.hashcons[enode] = id
             eclass.add(enode)
@@ -162,7 +175,7 @@ class EGraph:
 
                     if pteclass is not None:
                         # if not the same eclass
-                        if G.find(taileclass) == pteclass:
+                        if taileclass == pteclass:
                             possibletails[ind].append((None, pteclass))
                             continue
                         else:
@@ -214,7 +227,6 @@ class EGraph:
                         for m in matchlist:
                             matches.append((rhs, *m))
 
-            print(f'{len(matches)=}')
             for rhs, subst, lhseclass in matches:
                 match rhs:
                     # introducing new subst in rhs
@@ -228,8 +240,11 @@ class EGraph:
 
                     case [rhs, condition] if isinstance(condition, str):
                         for arg, eclass in subst.items():
-                            state = self.analyses[eclass][-1]
+                            state = self.analyses[eclass][2]
                             condition = condition.replace(arg, str(state))
+
+                        if 'None' in condition:
+                            continue
 
                         try:
                             if not eval(condition):
@@ -250,7 +265,7 @@ class EGraph:
             self.rebuild()
 
             if saturated:
-                break
+                return len(matches)
 
     def rewritesubst(self, subst, term):
         if isinstance(term, str):
@@ -283,7 +298,6 @@ class EGraph:
         print(self.parents)
         return ''
 
-
 def preprocess(pattern, vars=[]):
     if isinstance(pattern, str):
         vars.insert(0, pattern)
@@ -307,11 +321,11 @@ def rewrites(L, *rws):
 def cons(x, xs):
     return [x] + xs
 
-def fuse(L: Language, G: EGraph, fusewith: int, fuseon: int, a: EClass, b: EClass) -> EClass:
+def fuse(L: Language, G: EGraph, fusewith: Tuple[int, int], fuseon: int, a: EClass, b: EClass) -> EClass:
     enodes = []
 
     c, enode, _ = G.analyses[G.find(a)]
-    if enode.head != fusewith:
+    if enode.head not in fusewith:
         return None
 
     while enode.head != fuseon:
@@ -325,13 +339,126 @@ def fuse(L: Language, G: EGraph, fusewith: int, fuseon: int, a: EClass, b: EClas
 
     return extratail
 
+@lru_cache(maxsize=1<<20)
+def ghosterm(L: Language, t: T) -> List[T]:
+    if not t.tails:
+        return (L[t.head].type, t)
+
+    tails = map(partial(ghosterm, L), t.tails)
+    return [L[t.head].type] + ap(partial(T, t.head), product(*tails))
+
+@lru_cache(maxsize=1<<20)
+def ghostbust(L: Language, G: EGraph, depth = 3, eclass: EClass = None) -> List[T]:
+    if eclass is None:
+        return chain(map(partial(ghostbust, L, G, depth - 1), range(len(G))))
+
+    out = []
+    for t in G.values[eclass]:
+        out.append(L[t.head].type)
+
+        if depth == 0:
+            continue
+
+        if not t.tails:
+            out.append(T(t.head))
+
+        tails = map(partial(ghostbust, L, G, depth - 1), t.tails)
+        out.extend(ap(partial(T, t.head), product(*tails)))
+
+    return out
+
+
+def countsimilar(L: Language, G, a, b):
+    if isinstance(a, str) or isinstance(b, str):
+        return 1
+
+    if a.head != b.head:
+        return 0
+
+    return prod([countsimilars(L, G, at, bt)] for at, bt in zip(a.tails, b.tails))
+
+@lru_cache(maxsize=1<<20)
+def countsimilars(L: Language, G: EGraph, pattern: T, eclass: EClass = None) -> int:
+    if eclass is None:
+        return sum(map(partial(countsimilars, L, G, pattern), range(len(G))))
+
+    if isinstance(pattern, str):
+        return len(G.values[eclass])
+
+    c = 0
+    for f in G.values[eclass]:
+        if f.head != pattern.head or len(f.tails) != len(pattern.tails):
+            continue
+
+        c = prod(list(starmap(partial(countsimilars, L, G), zip(pattern.tails, f.tails))))
+
+    return int(c)
+
+# ought to use forceholes with debrujin instead of dicts and substs
+def renameholes(t, newnames):
+    if not t.tails:
+        return t
+
+    newtails = [None] * len(t.tails)
+    for tind, tail in enumerate(t.tails):
+        if isinstance(tail, str):
+            var = f'V{len(newnames)}'
+            newtails[tind] = var
+            newnames.append(var)
+        else:
+            newtails[tind] = renameholes(tail, newnames)
+
+    return t._replace(tails=tuple(newtails))
+
+def countails(G: EGraph) -> dict:
+    counts = defaultdict(int)
+    for n in chain(*G.values):
+        for eclass in n.tails:
+            counts[eclass] += 1
+
+    return counts
+
+def force(L: Language, G: EGraph):
+    counts = countails(G)
+    maxs, maxghost = 0, None
+
+    for ghost in set(chain(*ghostbust(L, G))):
+    # for ghost in set(chain(*ghostsingle(L, G))):
+        if isinstance(ghost, str) or length(ghost) == 1: continue
+
+        c = 0
+        for eclass in range(len(G)):
+            c += counts[eclass] * countsimilars(L, G, ghost, eclass)
+
+        n, nargs = lent(ghost)
+        if nargs == 0: continue
+
+        saved = c * (n - nargs) - length(ghost)
+        if saved > 0:
+            print(ghost, saved)
+
+        if saved > maxs:
+            maxs = saved
+            maxghost = ghost
+
+    if maxghost is None:
+        return maxghost
+
+    name = f'f{len(L.invented)}'
+    gamma = Term(maxghost, L[maxghost.head].type, repr=name)
+    L.add(gamma)
+
+    vars = []
+    ghost = renameholes(maxghost, vars)
+
+    return (ghost, L%f"({name} {' '.join(vars)})")
+
 def optimize(L, rws, expr):
     G = EGraph(termlength)
     id = G.addexpr(L%expr)
     G.saturate(rws)
     cost, term = G.extract(id)
     return L<term
-# ■ ~
 
 if __name__ == '__main__':
     L = Language([
@@ -382,10 +509,10 @@ if __name__ == '__main__':
     a = L%"(+ 1 (+ 2 ø))"
     b = L%"(+ 3 (+ 4 ø))"
 
-    eclass = fuse(L, G, L.index('+'), L.index('ø'), G.addexpr(a), G.addexpr(b))
+    eclass = fuse(L, G, (L.index('+'),), L.index('ø'), G.addexpr(a), G.addexpr(b))
     assert eclass == G.addexpr(L%"(+ 1 (+ 2 (+ 3 (+ 4 ø))))")
 
-    fuseind = partial(fuse, L, G, L.index('+'), L.index('ø'))
+    fuseind = partial(fuse, L, G, (L.index('+'),), L.index('ø'))
     rules = [
         (L%"(a A (a B R))", (L%'(a I R)', {'I': (fuseind, '(A, B)')}))
     ]
@@ -463,12 +590,13 @@ if __name__ == '__main__':
 
     G = EGraph(weightlength)
     Q = [1] * len(L)
-    g = L%"(@ f (@ f (@ g g) (@ g g)))"
+    g = L%"(@ f (@ g g) (@ g f) (@ g f) (@ g g))"
+    # g = L%"(@ f (@ g g) (@ g f) (@ g f) (@ (@ g g) g))"
+    # g = L%"(@ f (@ g g) (@ g g))"
     rooteclass = G.addexpr(g)
 
-    G.addexpr(L%"(@ g g)")
-
     size, g = G.extract(rooteclass)
+
     subtrees = list(everysubtree(g))
 
     minghost = None
@@ -489,26 +617,12 @@ if __name__ == '__main__':
     L.add(gamma)
     Q.append(1 + nargs)
 
-    # need to use forceholes with debrujin instead of dicts and substs
-    def renameholes(t, newnames):
-        if not t.tails:
-            return t
-
-        newtails = [None] * len(t.tails)
-        for tind, tail in enumerate(t.tails):
-            if isinstance(tail, str):
-                var = f'V{len(newnames)}'
-                newtails[tind] = var
-                newnames.append(var)
-            else:
-                newtails[tind] = renameholes(tail, newnames)
-
-        return t._replace(tails=tuple(newtails))
-
     rules = []
     vars = []
     ghost = renameholes(ghost, vars)
     rules.append((ghost, L%f"({name} {' '.join(vars)})"))
 
-    G.saturate(rules)
+    print(G.saturate(rules))
     print(L<G.extract(rooteclass)[1])
+
+    force(L, G)
