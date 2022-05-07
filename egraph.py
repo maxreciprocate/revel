@@ -14,26 +14,25 @@ class ENode(NamedTuple):
     tails: tuple = tuple()
 
     def __repr__(self):
-        if len(self.tails) == 0:
+        if not self.tails:
             return f'<{self.head}>'
 
         return f'<{self.head} {" ".join(map(repr, self.tails))}>'
 
 class EGraph:
-    def __init__(self, cost=lambda egraph, enode: 0, ctxfn=lambda enode: None):
+    def __init__(self, cost=lambda egraph, enode: 0, ctxfn=lambda egraph, enode: None):
         self.parents = []
         self.values = []
 
-        self.cost = cost
-        self.ctxfn = ctxfn
+        self.cost = partial(cost, self)
+        self.ctxfn = partial(ctxfn, self)
         self.analyses = []
         self.hashcons = {}
 
     def add(self, value=None):
         self.parents.append(-1)
         self.values.append({value})
-        ctx = self.ctxfn(value)
-        self.analyses.append([self.cost(self, value), value, self.ctxfn(value)])
+        self.analyses.append([self.cost(value), value, self.ctxfn(value)])
         return len(self) - 1
 
     def find(self, ind):
@@ -106,16 +105,17 @@ class EGraph:
         self.hashcons[enode] = id
         return id
 
-    def addexpr(self, expr: T, retenode=False) -> EClass:
+    def addexpr(self, expr: T | str, retenode=False) -> EClass:
         if not isinstance(expr, T):
-            return None
+            return expr
 
         tails = [self.addexpr(t) for t in expr.tails]
-        if any(t is None for t in tails):
-            return None
-
         enode = ENode(expr.head, tuple(tails))
-        eclass = self.addenode(enode)
+
+        if any(not isinstance(t, EClass) for t in tails):
+            retenode = True
+        else:
+            eclass = self.addenode(enode)
 
         if retenode:
             return enode
@@ -151,8 +151,7 @@ class EGraph:
             for a, b in cs:
                 self.merge(a, b)
 
-    # there is some room to rewrite this, but i hate wrapped generators
-    def match(self, pattern: T, enode: ENode):
+    def match(self, pattern: ENode | str, enode: ENode):
         if isinstance(pattern, str):
             return {pattern: self.hashcons[enode]}, self.hashcons[enode]
 
@@ -169,18 +168,13 @@ class EGraph:
 
                     possibletails[ind].append((None, taileclass))
                     subst[pt] = taileclass
-                else:
-                    # pt has no holes
-                    pteclass = self.addexpr(pt)
+                elif isinstance(pt, EClass):
+                    # if not the same eclass
+                    if taileclass != pt:
+                        return None
 
-                    if pteclass is not None:
-                        # if not the same eclass
-                        if taileclass == pteclass:
-                            possibletails[ind].append((None, pteclass))
-                            continue
-                        else:
-                            return None
-
+                    possibletails[ind].append((None, pt))
+                elif isinstance(pt, ENode):
                     # pt has holes
                     # there are a lot of enodes in this eclass
                     for tailenode in self.values[taileclass]:
@@ -267,7 +261,7 @@ class EGraph:
             if saturated:
                 return len(matches)
 
-    def rewritesubst(self, subst, term):
+    def rewritesubst(self, subst: dict, term: T):
         if isinstance(term, str):
             return subst[term]
 
@@ -291,12 +285,31 @@ class EGraph:
     def __len__(self):
         return len(self.parents)
 
+    def __getitem__(self, ind):
+        return self.values[self.find(ind)]
+
     def __repr__(self):
         print(self.hashcons)
         print(self.values)
         print(self.analyses)
         print(self.parents)
         return ''
+
+def prettyenode(L: Language, G: EGraph, enode: ENode):
+    match enode:
+        case str(free):
+            return free
+        case int(eclass):
+            return prettyenode(L, G, G.analyses[G.find(eclass)][1])
+        case ENode(head, tails):
+            head = L[head].repr
+
+            if len(tails) == 0:
+                return head
+            else:
+                return f'({head} {" ".join(map(partial(prettyenode, L, G), tails))})'
+        case _:
+            raise ValueError(f'malformed part {enode}: {type(enode)}')
 
 def preprocess(pattern, vars=[]):
     if isinstance(pattern, str):
@@ -348,25 +361,25 @@ def ghosterm(L: Language, t: T) -> List[T]:
     return [L[t.head].type] + ap(partial(T, t.head), product(*tails))
 
 @lru_cache(maxsize=1<<20)
-def ghostbust(L: Language, G: EGraph, depth = 3, eclass: EClass = None) -> List[T]:
+def ghostbust(L: Language, G: EGraph, depth = 4, eclass: EClass = None) -> List[T]:
     if eclass is None:
         return chain(map(partial(ghostbust, L, G, depth - 1), range(len(G))))
 
-    out = []
+    out = set()
     for t in G.values[eclass]:
-        out.append(L[t.head].type)
+        out.add(L[t.head].type)
 
         if depth == 0:
             continue
 
         if not t.tails:
-            out.append(T(t.head))
+            out.add(eclass)
+            continue
 
         tails = map(partial(ghostbust, L, G, depth - 1), t.tails)
-        out.extend(ap(partial(T, t.head), product(*tails)))
+        out |= set(map(partial(ENode, t.head), product(*tails)))
 
     return out
-
 
 def countsimilar(L: Language, G, a, b):
     if isinstance(a, str) or isinstance(b, str):
@@ -394,8 +407,56 @@ def countsimilars(L: Language, G: EGraph, pattern: T, eclass: EClass = None) -> 
 
     return int(c)
 
+@lru_cache(maxsize=1 << 30)
+def ghostsingle(L: Language, G: EGraph, depth = 3, eclass: EClass = None):
+    if eclass is None:
+        return chain(map(partial(ghostsingle, L, G, depth - 1), range(len(G))))
+
+    out = set()
+    for t in G.values[eclass]:
+        out.add(L.gammas[t.head].type)
+
+        if not t.tails:
+            out.add(eclass)
+
+        if depth == 0:
+            continue
+
+        tails = list(t.tails)
+        for ind in range(len(tails)):
+            for ghostail in ghostsingle(L, G, depth-1, tails[ind]):
+                tails[ind] = ghostail
+                nt = t._replace(tails=tuple(tails))
+                out.add(nt)
+                tails[ind] = t.tails[ind]
+
+    return out
+
+# count how much is in the free variable
+# check if the body matches, extract eclasses of the match
+def ghostpresence(G, ghost, enode) -> int:
+    count = 1
+
+    if ghost.head == enode.head and len(ghost.tails) == len(enode.tails):
+        for tail, eclass in zip(ghost.tails, enode.tails):
+            if isinstance(tail, str) or tail == eclass:
+                # count *= len(G.values[eclass])
+                pass
+            elif isinstance(tail, ENode):
+                c = 0
+                for tailenode in G.values[eclass]:
+                    c += ghostpresence(G, tail, tailenode)
+
+                count *= c
+            else:
+                return 0
+
+        return count
+
+    return 0
+
 # ought to use forceholes with debrujin instead of dicts and substs
-def renameholes(t, newnames):
+def renameholes(t: ENode, newnames: list):
     if not t.tails:
         return t
 
@@ -405,6 +466,8 @@ def renameholes(t, newnames):
             var = f'V{len(newnames)}'
             newtails[tind] = var
             newnames.append(var)
+        elif isinstance(tail, int):
+            newtails[tind] = tail
         else:
             newtails[tind] = renameholes(tail, newnames)
 
@@ -417,6 +480,16 @@ def countails(G: EGraph) -> dict:
             counts[eclass] += 1
 
     return counts
+
+@lru_cache
+def nvarios(G: EGraph, eclass: EClass) -> int:
+    "the number of ways of expressing eclass"
+    c = 0
+
+    for enode in G.values[G.find(eclass)]:
+        c += prod(ap(P(nvarios, G), enode.tails))
+
+    return c
 
 def force(L: Language, G: EGraph):
     counts = countails(G)
@@ -453,6 +526,52 @@ def force(L: Language, G: EGraph):
 
     return (ghost, L%f"({name} {' '.join(vars)})")
 
+def forcesingle(L, G, root):
+    counts = zeros((len(G), len(G)), int)
+    counts[root, root] = 1
+
+    for eclass in reversed(range(len(G))):
+        counteclass = counts.sum(0)[eclass]
+
+        for enode in G.values[eclass]:
+            for tail in enode.tails:
+                counts[eclass, tail] += counteclass
+
+    counts = counts.sum(0)
+    counts[counts == 0] = 1
+
+    rules = []
+    ghosts = set()
+    maxghosts = Heap(3)
+    for ghost in tqdm(chain(*ghostsingle(L, G, depth=3))):
+        if length(ghost) <= 1: continue
+        if ghost in ghosts: continue
+        ghosts.add(ghost)
+
+        c = 0
+        for eclass, enodes in enumerate(G.values):
+            if len(enodes) == 0: continue
+
+            for enode in enodes:
+                c += ghostpresence(G, ghost, enode) * counts[eclass]
+
+        n, nargs = lent(ghost)
+        saved = c * (n - nargs) - length(ghost)
+        maxghosts.push(saved, ghost)
+
+    for saved, ghost in maxghosts:
+        print(prettyenode(L, G, ghost), saved)
+
+        vars = []
+        ghost = renameholes(ghost, vars)
+
+        name = f'f{len(L.invented)}'
+        L.add(Term(ghost, L[ghost.head].type, repr=name))
+        rules.append((G.addexpr(ghost, True), L%f"({name} {' '.join(vars)})"))
+
+    print(f'sieved through {len(ghosts)} ghosts, wouh')
+    return rules
+
 def optimize(L, rws, expr):
     G = EGraph(termlength)
     id = G.addexpr(L%expr)
@@ -468,29 +587,32 @@ if __name__ == '__main__':
     ], type='N')
 
     G = EGraph()
-    expr = L%"(+ 1 (+ 0 1))"
-    subst, c = G.match(L%"(+ B (+ A 1))", G.addexpr(expr, True))[0]
-
+    expr = G.addexpr(L%"(+ 1 (+ 0 1))", True)
+    pttn = G.addexpr(L%"(+ B (+ A 1))", True)
+    subst, c = G.match(pttn, expr)[0]
     assert subst["A"] == G.hashcons[G.addexpr(L%"0", True)]
     assert subst["B"] == G.hashcons[G.addexpr(L%"1", True)]
     assert c == G.hashcons[G.addexpr(expr, True)]
 
     G = EGraph()
-    expr = L%"(+ (+ (+ 1 1)) (+ 0 1))"
-    subst, c = G.match(L%"(+ (+ (+ A A)) (+ 0 A))", G.addexpr(expr, True))[0]
+    expr = G.addexpr(L%"(+ (+ (+ 1 1)) (+ 0 1))", True)
+    pttn = G.addexpr(L%"(+ (+ (+ A A)) (+ 0 A))", True)
+    subst, c = G.match(pttn, expr)[0]
 
     assert subst["A"] == G.hashcons[G.addexpr(L%"1", True)]
     assert c == G.hashcons[G.addexpr(expr, True)]
 
     # not consistent
     G = EGraph()
-    expr = L%"(+ (+ (+ 1 1)) (+ 0 1))"
-    assert not G.match(L%"(+ (+ (+ A A)) (+ A 1))", G.addexpr(expr, True))
+    expr = G.addexpr(L%"(+ (+ (+ 1 1)) (+ 0 1))", True)
+    pttn = G.addexpr(L%"(+ (+ (+ A A)) (+ A 1))", True)
+    assert not G.match(pttn, expr)
 
     # bigger matches
     G = EGraph()
-    expr = L%"(+ (+ (+ 1 1)) (+ 0 (+ 1 0)))"
-    subst, c = G.match(L%"(+ A (+ 0 B))", G.addexpr(expr, True))[0]
+    expr = G.addexpr(L%"(+ (+ (+ 1 1)) (+ 0 (+ 1 0)))", True)
+    pttn = G.addexpr(L%"(+ A (+ 0 B))", True)
+    subst, c = G.match(pttn, expr)[0]
     assert subst["A"] == G.hashcons[G.addexpr(L%"(+ (+ 1 1))", True)]
     assert subst["B"] == G.hashcons[G.addexpr(L%"(+ 1 0)", True)]
     assert c == G.hashcons[G.addexpr(expr, True)]
@@ -514,7 +636,7 @@ if __name__ == '__main__':
 
     fuseind = partial(fuse, L, G, (L.index('+'),), L.index('ø'))
     rules = [
-        (L%"(a A (a B R))", (L%'(a I R)', {'I': (fuseind, '(A, B)')}))
+        (G.addexpr(L%"(a A (a B R))"), (L%'(a I R)', {'I': (fuseind, '(A, B)')}))
     ]
 
     expr = L%"(a (+ 1 (+ 2 (+ 3 ø))) (a (+ 4 ø) end))"
@@ -532,7 +654,7 @@ if __name__ == '__main__':
 
     G = EGraph(termlength)
     root = G.addexpr(L%"(f (g g))")
-    G.saturate([(L%"(g g)", L%"f")])
+    G.saturate([(G.addexpr(L%"(g g)", True), L%"f")])
     assert G.extract(root)[1] == L%"(f f)"
 
     #::: Looping
@@ -566,11 +688,11 @@ if __name__ == '__main__':
         return G.addexpr(T(L.index(str(inc))))
 
     rules = [
-        (L%'(. 1 ø)', L%'(~ s ø)'),
-        (L%'(. N1 (. N2 P))', (L%'(~ s (. N2 P))', 'N1 == N2 + 1')),
-        (L%'(. N1 (. N2 P))', (L%'(~ d (. N2 P))', 'N1 == N2 - 1')),
-        (L%'(~ F R)', L%'(loop 1 F R)'),
-        (L%"(~ F (loop N F R))", (L%"(loop SN F R)",
+        (G.addexpr(L%'(. 1 ø)', True), L%'(~ s ø)'),
+        (G.addexpr(L%'(. N1 (. N2 P))', True), (L%'(~ s (. N2 P))', 'N1 == N2 + 1')),
+        (G.addexpr(L%'(. N1 (. N2 P))', True), (L%'(~ d (. N2 P))', 'N1 == N2 - 1')),
+        (G.addexpr(L%'(~ F R)', True), L%'(loop 1 F R)'),
+        (G.addexpr(L%"(~ F (loop N F R))", True), (L%"(loop SN F R)",
             {'SN': (partial(increaseloop, L, G), '(N,)')})),
     ]
 
@@ -620,7 +742,7 @@ if __name__ == '__main__':
     rules = []
     vars = []
     ghost = renameholes(ghost, vars)
-    rules.append((ghost, L%f"({name} {' '.join(vars)})"))
+    rules.append((G.addexpr(ghost, True), L%f"({name} {' '.join(vars)})"))
 
     print(G.saturate(rules))
     print(L<G.extract(rooteclass)[1])
