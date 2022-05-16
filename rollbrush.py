@@ -1,8 +1,8 @@
 from importblob import *
 from roll import *
 
-MOVE = 0x2
-NEGMOVE = 0x3
+MOVE = 0x3
+NEGMOVE = 0x4
 UPMOVE = 0x5
 DOWNMOVE = 0x6
 SAVESTATE = 0x7
@@ -35,18 +35,17 @@ def renderbrushes(brushes: np.ndarray, canvas: np.ndarray):
     for op, d in brushes:
         if op == MOVE:
             if 0 > x or x >= bound_x or 0 > y or y >= bound_y:
-                return
+                return x, y
 
             canvas[y, x] = ONSET
             x += 1
 
             for _ in range(d-1):
                 if 0 > x or x >= bound_x or 0 > y or y >= bound_y:
-                    return
+                    return x, y
 
                 canvas[y, x] = TAIL
                 x += 1
-
 
         elif op == NEGMOVE:
             x += d
@@ -60,6 +59,8 @@ def renderbrushes(brushes: np.ndarray, canvas: np.ndarray):
         elif op == RESUMESTATE:
             x = saved_x
             y = saved_y
+
+    return x, y
 
 def stage(start: int, brushes: list):
     xs = array(down(start, brushes), dtype=int)

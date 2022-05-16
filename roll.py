@@ -1,43 +1,41 @@
-from importblob import *
+from blob import *
 from mido import MidiFile, MidiTrack, Message, MetaMessage
 
 TAIL = 0x1
-ONSET = 0x4
+ONSET = 0x2
 
-def bakeroll(fpath: str, quantize: int = 32) -> np.ndarray:
+def bakeroll(fpath: str, quantize: int = 32, staccato: bool = True) -> np.ndarray:
     midi = MidiFile(fpath)
     midi.ticks_per_beat # per 1/4
 
     # per 1/32 {//8} or 1/16 {//4}
     ticksatom = midi.ticks_per_beat // (quantize // 4)
 
-    for track in midi.tracks:
-        ctime = 0
-        for m in track:
-            ctime += round(m.time / ticksatom)
+    track = midi.tracks[np.argmax(ap(len, midi.tracks))]
 
-        if ctime == 0:
-            continue
+    ctime = 0
+    for m in track:
+        ctime += round(m.time / ticksatom)
 
-        grid = zeros((88, ctime+1), np.int8)
-        starts = zeros(88, np.uint32)
+    grid = zeros((88, ctime+1), np.int8)
+    starts = zeros(88, np.uint32)
 
-        ctime = 0
-        for m in track:
-            ctime += round(m.time / ticksatom)
+    ctime = 0
+    for m in track:
+        ctime += round(m.time / ticksatom)
 
-            if m.type == 'note_on':
-                starts[-m.note] = ctime
+        if m.type == 'note_off' or (m.type == 'note_on' and m.velocity == 0):
+            start = starts[-m.note]
 
-            elif m.type == 'note_off':
-                start = starts[-m.note]
+            grid[-m.note, start] = ONSET
 
-                grid[-m.note, start] = ONSET
+            if not staccato:
                 grid[-m.note, start+1:ctime] = TAIL
 
-        return grid
+        elif m.type == 'note_on':
+            starts[-m.note] = ctime
 
-    raise ValueError(f"cannot quantize that low: {quantize} (???)")
+    return grid
 
 def midiroll(grid: np.ndarray, fpath: str, quantize: int = 32) -> MidiFile:
     opennotes = zeros(88, bool)
@@ -95,15 +93,30 @@ def forceunique(xs: np.ndarray) -> np.ndarray:
 
     return np.stack(unique)
 
+def wholeshards(roll: np.ndarray, maxlen: int = 30) -> np.ndarray:
+    "straight up cuts with leading space"
+    totalen = roll.shape[1]
+    shards = []
+    for sind in range(totalen):
+        for eind in range(sind+1, min(totalen, sind+maxlen)):
+            shard = roll[:, sind:eind]
+            if shard.shape[1] < maxlen:
+                shard = np.pad(shard, [(0, 0), (0, maxlen - (eind - sind) - 1)])
+
+            shards.append(shard)
+
+    return forceunique(shards)
+
 def shardroll(grid: np.ndarray, L: int = 32, every: bool = False) -> np.ndarray:
     onsets = set(np.where(grid == ONSET)[1])
-    # treat the final tick as seperate onset
+    # treat the final tick as a seperate onset
     onsets.add(grid.shape[1])
     onsets = sorted(list(onsets))
 
     shards = []
     for sind in range(len(onsets)-1):
         if every:
+            lastind = findfirst(lambda x: x > onsets[sind] + L, onsets) or len(onsets)
             for eind in range(sind+1, lastind):
                 start = onsets[sind]
                 end = onsets[eind]
@@ -128,11 +141,47 @@ def shardroll(grid: np.ndarray, L: int = 32, every: bool = False) -> np.ndarray:
 
     return forceunique(shards)
 
+def almostchew(fpath, rolen=40, maxlen=10, staccato=True, scale=True, quantize=16):
+    roll = bakeroll(fpath, quantize=quantize, staccato=staccato)
+    roll = roll[:, :rolen]
+
+    if scale:
+        HMINOR = cycle([2, 1, 2, 2, 1, 3, 1])
+
+        hoffset = roll[:, 0].argmax()
+        hoffset += 8 * 12
+
+        inds = []
+        for offset in HMINOR:
+            if hoffset < 0:
+                break
+
+            if hoffset < 88:
+                inds.append(hoffset)
+
+            hoffset -= offset
+
+        roll = roll[inds[::-1]]
+
+    notes = np.where(roll > 0)[0]
+    lower, upper = max(0, notes.min()-2), min(88, notes.max()+2)
+    roll = roll[lower:upper, :]
+
+    offset = roll[:, 0].argmax()
+    # X = shardroll(roll, 20, every=True)
+    X = wholeshards(roll, maxlen=maxlen)
+
+    return roll, X, offset
+
 if __name__ == '__main__':
     quantize = 32
 
-    grid = bakeroll('../sms/opening.mid', quantize=quantize)
-    m = midiroll(grid, '../sms/opening0.mid', quantize=quantize)
+    # grid = bakeroll('../sms/tunes/Game Over.mid', quantize=quantize)
+    roll, X, offset = almostchew('../sms/tunes/Game Over.mid', rolen=23, scale=False)
 
-    grid = bakeroll('fonts/kars-break.mid', quantize=quantize)
-    midiroll(grid, '../sms/kars-break0.mid', quantize=quantize)
+    iimshow(roll)
+    # grid = bakeroll('../sms/opening.mid', quantize=quantize)
+    # m = midiroll(grid, '../sms/opening0.mid', quantize=quantize)
+
+    # grid = bakeroll('fonts/kars-break.mid', quantize=quantize)
+    # midiroll(grid, '../sms/kars-break0.mid', quantize=quantize)
