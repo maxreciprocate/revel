@@ -79,10 +79,23 @@ class EGraph:
 
     def canonize(self, f: ENode) -> ENode:
         # cannot cannonize anything with holes
-        if any(isinstance(tail, str) for tail in f.tails):
+        if any(not isinstance(tail, EClass) for tail in f.tails):
             return None
 
         return ENode(f.head, tuple(self.find(a) for a in f.tails))
+
+    def gcanonize(self, f: ENode) -> ENode:
+        if not isinstance(f, ENode):
+            return f
+
+        tails = []
+        for t in f.tails:
+            if not isinstance(t, EClass):
+                tails.append(t)
+            else:
+                tails.append(self.find(t))
+
+        return ENode(f.head, tuple(tails))
 
     def merge(self, a: EClass, b: EClass):
         id = self.union(a, b)
@@ -277,10 +290,10 @@ class EGraph:
 
         return self.addenode(ENode(term.head, tuple(newtails)))
 
-    def extract(self, eclass):
+    def extract(self, eclass, fn=T):
         cost, enode, _ = self.analyses[self.find(eclass)]
-        tails = [self.extract(eclass)[1] for eclass in enode.tails]
-        return cost, T(enode.head, tails=tuple(tails))
+        tails = [self.extract(eclass, fn=fn)[1] for eclass in enode.tails]
+        return cost, fn(enode.head, tails=tuple(tails))
 
     def __len__(self):
         return len(self.parents)
@@ -407,6 +420,32 @@ def countsimilars(L: Language, G: EGraph, pattern: T, eclass: EClass = None) -> 
 
     return int(c)
 
+def lentqenode(G, t):
+    if isinstance(t, str):
+        return [0, 1]
+
+    if isinstance(t, int):
+        x = [G.analyses[t][0], 0]
+        return x
+
+    return list(reduce(lambda acc, x: [acc[0] + x[0], acc[1] + x[1]], map(partial(lentqenode, G), t.tails), [1, 0]))
+
+def contract(G: EGraph, enode: ENode):
+    tails = []
+    for tail in enode.tails:
+        if isinstance(tail, EClass | str):
+            tails.append(tail)
+        elif (newtail := G.canonize(tail)) is not None:
+            tails.append(G.hashcons[newtail])
+        else:
+            x = contract(G, tail)
+            if x in G.hashcons:
+                tails.append(G.hashcons[x])
+            else:
+                tails.append(x)
+
+    return ENode(enode.head, tuple(tails))
+
 @lru_cache(maxsize=1 << 30)
 def ghostsingle(L: Language, G: EGraph, depth = 3, eclass: EClass = None):
     if eclass is None:
@@ -427,10 +466,162 @@ def ghostsingle(L: Language, G: EGraph, depth = 3, eclass: EClass = None):
             for ghostail in ghostsingle(L, G, depth-1, tails[ind]):
                 tails[ind] = ghostail
                 nt = t._replace(tails=tuple(tails))
-                out.add(nt)
+                out.add(contract(G, nt))
                 tails[ind] = t.tails[ind]
 
     return out
+
+@lru_cache(maxsize=1<<20)
+def expandroot(G, maxcomp, eclass):
+    if len(G[eclass]) == 0:
+        raise ValueError(f"missing {eclass=}")
+
+    out = []
+    for enode in G[eclass]:
+        if not enode.tails:
+            out.append(enode)
+
+        tails = [expandroot(G, maxcomp-1, t) for t in enode.tails]
+        if len(tails) == 0: continue
+
+        tails = list(product(*tails))
+        out.extend([ENode(enode.head, tuple(ts)) for ts in tails])
+
+    out = [f for f in out if np.isfinite(isslimenough(G, f, maxcomp))]
+    return out
+
+def isslimenough(G, f, limit):
+    if not isinstance(f, ENode):
+        return 1
+
+    if not np.isfinite(weightenode(G, ENode(f.head))):
+        return np.inf
+
+    l = 1
+
+    for t in f.tails:
+        if isinstance(t, EClass):
+            l += G.analyses[t][0]
+        elif isinstance(t, str):
+            l += 1
+        elif (ct := contract(G, t)) in G.hashcons:
+            l += weightenode(G, ct)
+        else:
+            l += isslimenough(G, t, limit)
+
+        limit -= l
+        if limit < 0:
+            return np.inf
+
+    return l
+
+@lru_cache(maxsize=1<<20)
+def isequalholenode(G, a, b):
+    if isinstance(a, EClass) and isinstance(b, EClass):
+        return a == b
+
+    if isinstance(a, EClass):
+        return contract(G, b) in G[a]
+    if isinstance(b, EClass):
+        return contract(G, a) in G[b]
+
+    if a.head != b.head or len(a.tails) != len(b.tails):
+        return False
+
+    for atail, btail in zip(a.tails, b.tails):
+        # hole
+        if isinstance(atail, str) or isinstance(btail, str):
+            continue
+
+        if not isequalholenode(G, atail, btail):
+            return False
+
+    return True
+
+@lru_cache(maxsize=1<<20)
+def countin(G, source, a):
+    if not isinstance(source, ENode) or not isinstance(a, ENode):
+        return 0
+
+    rest = sum([countin(G, tail, a) for tail in source.tails])
+
+    if isequalholenode(G, source, a):
+        return 1 + rest
+
+    return rest
+
+def samplepath(G: EGraph, f: ENode) -> ENode:
+    tails = []
+    for t in f.tails:
+        nt = list(G[t])[randint(len(G[t]))]
+        nt = samplepath(G, nt)
+        tails.append(nt)
+
+    return ENode(f.head, tuple(tails))
+
+def kkstack(G, xs, ghosts):
+    ghostheap = Heap(100)
+
+    xlengths = [lentqenode(G, x)[0] for x in xs]
+    offset = np.min(xlengths)
+
+    for ogk, ghost in ghosts:
+        n, nargs = lentqenode(G, ghost)
+        lghost = n + nargs
+
+        k = 0
+        for x, lx in zip(xs, xlengths):
+            c = countin(G, x, ghost)
+            if c > 0:
+                s = c * (n - nargs - 1) - lghost
+            else: # we're always taking some extra ghosts
+                s = -np.inf
+
+            k += np.exp2(offset - lx + s) * ogk
+            # k += np.exp2(+s) * ogk
+
+        ghostheap.push(k, ghost)
+
+    return ghostheap
+
+def kkalon(L, G, source, history, rules, depth, verb=False):
+    sroot = G.addexpr(source)
+    G.saturate(rules)
+    sroot = G.find(sroot)
+    ghosts = set(filter(lambda g: length(g) > 1, chain(*ghostsingle(L, G, depth=depth))))
+    ghosts = [(1, ghost) for ghost in ghosts]
+    if verb: print(f'{len(ghosts)=}')
+
+    xs = list(set([samplepath(G, random.choice(list(G[sroot]))) for _ in range(10**3)]))
+    xs.append(G.extract(sroot, ENode)[1])
+
+    heaps = multicore(kkstack, zip(repeat(G), repeat(xs), nsplit(ncores, ghosts)))
+    ghosts = [(k, ghost) for k, ghost in chain(*heaps) if length(ghost) > 1 and k > 1e-9]
+    lenghosts = len(ghosts)
+
+    if verb:
+        print('oneself')
+        for ind, (k, ghost) in enumerate(sorted(ghosts, reverse=True, key=lambda x: x[0])):
+            if ind < 10:
+                print(prettyenode(L, G, ghost), log(k))
+
+    hroot = G.addexpr(history)
+    G.saturate(rules)
+    hroot = G.find(hroot)
+    hxs = list(set([samplepath(G, random.choice(list(G[hroot]))) for _ in range(10**3)]))
+    hxs.append(G.extract(sroot, ENode)[1])
+
+    heaps = multicore(kkstack, zip(repeat(G), repeat(hxs), nsplit(ncores, ghosts)))
+
+    if verb: print('history')
+
+    kalon = 0
+    for ind, (k, ghost) in enumerate(sorted(chain(*heaps), reverse=True)):
+        kalon += k
+        if verb and ind < 10:
+            print(prettyenode(L, G, ghost), log(k))
+
+    return kalon / len(ghosts), sum(lent(xs[-1]))
 
 # count how much is in the free variable
 # check if the body matches, extract eclasses of the match

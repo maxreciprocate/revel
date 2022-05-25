@@ -1,168 +1,11 @@
-from importblob import *
+from blob import *
+from lang import *
 
 from rollbrush import *
 from q import *
 from yee import *
 from rich import print
 from gast import parse
-
-if __name__ != '__main__' or 'get_ipython' in globals():
-    ncores = 1
-else:
-    ncores = os.cpu_count() // 2
-
-# ■ ~
-
-class T(NamedTuple):
-    head: int
-    tails: tuple = tuple()
-
-    def __repr__(self):
-        if self.tails:
-            return f"({self.head} {' '.join([repr(t) for t in self.tails])})"
-
-        return str(self.head)
-
-class Term(NamedTuple):
-    head: int
-    type: type
-    tailtypes: list = []
-    forbidden: list = []
-    repr: str = '?'
-
-    def __repr__(self):
-        return self.repr
-
-class Language:
-    def __init__(self, core, type):
-        self.core = core
-        self.invented = []
-        self.type = type
-
-        self.infer()
-
-    def infer(self):
-        # keep the ordering
-        self.gammas = self.core + self.invented
-        # tau -> [gind]
-        self.bytype = defaultdict(list)
-
-        # fill type pool
-        for gind, g in enumerate(self):
-            self.bytype[g.type].append(gind)
-
-        # reconstruct gammas
-        for gind, g in enumerate(self):
-            newtailtypes = []
-
-            for tind, (tailtype, forbidden) in enumerate(zip_longest(g.tailtypes, g.forbidden)):
-                forbidden = forbidden or []
-                generictype = f"{tailtype.split(':')[0]}>" if ':' in tailtype else tailtype
-                # sieve forbidden ginds
-                ginds = [ind for ind in self.bytype[generictype] if not self[ind].repr in forbidden]
-                specifictype = f"{generictype[:-1]}:{g.repr}:{tind}>"
-
-                self.bytype[specifictype] = ginds
-                newtailtypes.append(specifictype)
-
-            self.gammas[gind] = Term(g.head, g.type, newtailtypes, g.forbidden, g.repr)
-
-        bytype = {tau: array(ginds) for tau, ginds in self.bytype.items()}
-        self.bytype = bytype
-        self.rbytype = {tau: [self.gammas[gind] for gind in ginds] for tau, ginds in self.bytype.items()}
-
-    def solder(self, Q=None):
-        if Q is None:
-            Q = {tau: -np.log2(th.ones(len(gs))/len(gs)) for tau, gs in self.bytype.items()}
-            for tau, qs in Q.items():
-                if 'N' in tau:
-                    Q[tau][-1] = 50
-
-        taus = list(self.bytype.keys())
-        for tau in taus:
-            qs, sinds = Q[tau].sort()
-            qs = ap(lambda x: round(x, 1), qs.numpy())
-            gs = ap(lambda gind: self[gind].repr, np.atleast_1d(array(self.bytype[tau])[sinds]))
-            # print(f'{tau} ~ {list(zip(gs, qs))}')
-
-        self.views = multicore(ncores, multiview, zip(repeat(self), repeat(Q), nsplit(ncores, taus)))
-        if isinstance(self.views, list):
-            self.views = reduce(lambda acc, x: acc | x, self.views, {})
-
-    def reset(self):
-        self.invented = []
-        self.infer()
-
-    def add(self, g):
-        self.invented.append(g)
-        self.gammas = self.core + self.invented
-
-    def __getitem__(self, ind):
-        if isinstance(ind, (int, np.int64)):
-            return self.gammas[ind]
-
-        return self.gammas[self.index(ind)]
-
-    def __len__(self):
-        return len(self.gammas)
-
-    def __repr__(self):
-        return repr(self.gammas)
-
-    def index(self, repr: str):
-        for ind, g in enumerate(self.gammas):
-            if g.repr == repr:
-                return ind
-
-        return None
-
-    def __hash__(self):
-        return len(self.invented)
-
-def grepr(G, g):
-    if not isinstance(g, (T, int)):
-        return g
-
-    if isinstance(g.head, T):
-        if g.tails:
-            return f"(λ[{g.head}]. {' '.join([grepr(G, t) for t in g.tails])})"
-
-        return f"λ[{g.head}]"
-
-    if isinstance(g.head, int) and g.head < 0:
-        return str(g.head)
-
-    if not g.tails:
-        return G[g.head].repr
-
-    return f"({G[g.head].repr} {' '.join([grepr(G, t) for t in g.tails])})"
-
-def length(g: T) -> int:
-    if isinstance(g, (int, str)):
-        return 1
-
-    return 1 + sum(map(length, g.tails))
-
-# TODO unhashable type list: tail <B> accepts [(...)]
-# @lru_cache(maxsize=1 << 20)
-def evalg(G, args, g):
-    # debruijn index
-    if isinstance(g.head, int) and g.head < 0:
-        return args[g.head]
-
-    # atom
-    if not g.tails:
-        return G[g.head].head
-
-    # application
-    gamma = G[g.head]
-    tails = tuple([evalg(G, args, tail) for tail in g.tails])
-
-    # abstraction
-    if isinstance(gamma.head, T):
-        return evalg(G, tails, gamma.head)
-
-    return gamma.head(*tails)
 
 
 @njit
@@ -543,7 +386,7 @@ def multicore(ncores, fn, args):
 
 def isequalholesub(ghost, tree):
     "== while skipping holes"
-    if ghost.head != tree.head:
+    if ghost.head != tree.head or len(ghost.tails) != len(tree.tails):
         return False
 
     for g, t in zip(ghost.tails, tree.tails):
@@ -623,9 +466,12 @@ def countghosts(G, alltrees, subtrees):
         if isinstance(ghost, str) or not ghost.tails:
             continue
 
+        c = 0
         for tree in alltrees:
             if isequalholesub(ghost, tree):
-                matches[ghost] += 1
+                c += 1
+
+        matches[ghost] = c
 
     return matches
 
