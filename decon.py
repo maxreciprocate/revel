@@ -5,12 +5,12 @@ def note(root, scale, index, next):
     return [(root + scales[scale][index]) % 12] + next
 
 def multindex(i, nexti):
-    return [i-1] + nexti
+    return i + nexti
 
 def totree(L, xs):
     x, *xs = xs
-    tails = (totree(L, xs),) if xs else (T(L.index("nø")),)
-    return T(L.index(f"+{roots[x]}"), tails)
+    tail = totree(L, xs) if xs else T(L.index("nø"))
+    return T(L.index('+'), (T(L.index(f"+{roots[x]}")), tail))
 
 flatsymbol = '♭'
 sharpsymbol = '♯'
@@ -81,6 +81,7 @@ def annotatescales(L, name, voice, term):
     annotations = [None] * len(voice)
     ind = 0
     for t in levelterm(L, term, L.index('nø')):
+        t = t.tails[0]
         key = (L<t.tails[0])[1:]
         scale = L<t.tails[1]
 
@@ -141,7 +142,8 @@ L = Language([
     *[Term(n, '?N', repr=str(n)) for n in range(1, max(map(len, scales))+1)],
     *[Term(ind, '?scale', repr=scale) for ind, scale in enumerate(scalesmap.keys())],
     *[Term(n, '?root', repr=':' + roots[n]) for n in range(12)],
-    Term(note, '?d', ['?root', '?scale', '?index', '?d'], repr='+'),
+    Term(note, '?note', ['?root', '?scale', '?index'], repr='*'),
+    Term('cons', '?L', ['?note', '?L'], repr='+'),
     *[Term(f"+{root}", '?note', ['?note'], repr=f"+{root}") for root in roots],
     Term('loop', '?index', ['?N', '?N'], repr='loop'),
     Term('+1', '?N', ['?N'], repr='+1'),
@@ -150,7 +152,6 @@ L = Language([
 
 lastnum = [l for l in L if l.repr.isdigit()][-1].repr
 
-@lru_cache(1<<20)
 def weightenode(G: EGraph, enode: ENode) -> float:
     if L.index('+C') <= enode.head <= L.index('+B'):
         return np.inf
@@ -175,10 +176,9 @@ def bakein(midifpath):
         return randint(12, size=20)
 
     roll = bakeroll(midifpath, quantize=32, staccato=True)
-    roll = roll[::-1, :]
     midivoice = roll.argmax(0)
     voice = midivoice[np.nonzero(midivoice)]
-    voice = (voice + 1) % 12
+    voice = voice % 12
     return voice
 
 def stagerules(L: Language, G: EGraph):
@@ -188,35 +188,38 @@ def stagerules(L: Language, G: EGraph):
     for ri, root in enumerate(roots):
         for scale, tones in scalesmap.items():
             for i, n in enumerate(tones):
-                rules.append(f"(+{roots[(n+ri) % 12]} ...) ~> (+ :{roots[ri]} {scale} (@ {scale} {i+1} iø) ...)")
+                rule = f"+{roots[(n+ri) % 12]} ~> (* :{roots[ri]} {scale} (@ {scale} {i+1} iø))"
+                rules.append(rule)
 
     rules = rewrites(L, *rules)
     global incloop
     lincloop = partial(incloop, G)
 
     langrws = [
-        (G.addexpr(L%"(+ R S I1 (+ R S I2 ...))", True), (L%"(+ R S I ...)", {'I': (fuseind, '(I2, I1)')})),
+        (G.addexpr(L%"(+ (* R S I1) (+ (* R S I2) ...))", True), (L%"(+ (* R S I) ...)", {'I': (fuseind, '(I2, I1)')})),
         (G.addexpr(L%"(@ S I2 (@ S I1 ...))", True), (L%"(@ S +1 (@ S I1 ...))", "I2 == I1 % S + 1")),
         (G.addexpr(L%"(@ S I2 (@ S I1 ...))", True), (L%"(@ S -1 (@ S I1 ...))", "I1 == I2 % S + 1")),
         (G.addexpr(L%"(@ S F (@ S F ...))", True), L%"(loop 2 S F ...)"),
         (G.addexpr(L%"(@ S F (loop N S F ...))", True), (L%"(loop NN S F ...)", {'NN': (lincloop, '(N,)')})),
-        (G.addexpr(L%"(+ R S (loop N S F (@ S 1 iø)) ...)", True), (L%"(+ R S (loop NN S F iø) ...)", {'NN': (lincloop, '(N,)')})),
+        (G.addexpr(L%"(+ (* R S (loop N S F (@ S 1 iø))) ...)", True), (L%"(+ (* R S (loop NN S F iø)) ...)", {'NN': (lincloop, '(N,)')}))
     ]
 
     rules.extend(langrws)
     return rules
 
-def rendervoice(render, namevoice):
+def render(midipath, midi):
     G = EGraph(weightenode, ctxfn)
-    rooteclass = G.addexpr(totree(L, namevoice[1]))
+    rooteclass = G.addexpr(totree(L, midi))
 
-    G.saturate(stagerules(L, G))
-    opt = G.extract(rooteclass)[1]
+    G.saturate(stagerules(L, G), 10)
+    cost, opt = G.extract(rooteclass)
+
     for t in levelterm(L, opt, L.index('nø')):
         print(grepr(L, t))
 
     if render:
-        annotatescales(L, *namevoice, opt)
+        annotatescales(L, midipath, midi, opt)
+
     return opt
 
 def getkalon(L, history, source):
@@ -224,31 +227,6 @@ def getkalon(L, history, source):
     return kkalon(L, G, totree(L, source), totree(L, history), stagerules(L, G), depth=3, verb=True)
 
 if __name__ == '__main__':
-    sources = [
-        'tunes/the-lick.mid',
-        'tunes/coltrane.mid',
-        'tunes/charlie-parker-1.mid',
-        'tunes/charlie-parker-2.mid',
-        'tunes/bill-evans-1.mid',
-        'tunes/bill-evans-2.mid',
-        'tunes/barry-harris.mid',
-        'tunes/al-haig.mid',
-    ]
-
-    ss = ap(list, ap(bakein, sources))
-
-    H = flatten(ss)
-    out = ap(P(rendervoice, True), zip(sources, ss))
-
-    ks = ap(P(getkalon, L, H), ss)
-
-    for (k, ml), source in zip(ks, sources):
-        print(f'{log(k)} {ml} {source}')
-
-    kalons = list(zip(ks, sources))
-    pickle.dump(kalons, open('photos/kalons.pkl','wb'))
-
-    ks = ap(len, ss)
-
-    lenghts = list(zip(ks, sources))
-    pickle.dump(lengths, open('photos/lengths.pkl','wb'))
+    midipath = sys.argv[1] if len(sys.argv) > 1 else "tunes/barry-harris.mid"
+    midi = bakein(midipath)
+    render(midipath, midi)

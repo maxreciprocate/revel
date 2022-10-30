@@ -1,6 +1,7 @@
 from blob import *
 from lang import *
-from rich import print
+from rich import print as rprint
+from tqdm.rich import tqdm
 
 # ■ ~
 
@@ -224,7 +225,7 @@ class EGraph:
             return out
 
     def saturate(self, rws, times=10):
-        for _ in range(times):
+        for _ in tqdm(range(times)):
             saturated = True
 
             matches = []
@@ -302,10 +303,10 @@ class EGraph:
         return self.values[self.find(ind)]
 
     def __repr__(self):
-        print(self.hashcons)
-        print(self.values)
-        print(self.analyses)
-        print(self.parents)
+        rprint(self.hashcons)
+        rprint(self.values)
+        rprint(self.analyses)
+        rprint(self.parents)
         return ''
 
 def prettyenode(L: Language, G: EGraph, enode: ENode):
@@ -365,7 +366,6 @@ def fuse(L: Language, G: EGraph, fusewith: Tuple[int, int], fuseon: int, a: ECla
 
     return extratail
 
-@lru_cache(maxsize=1<<20)
 def ghosterm(L: Language, t: T) -> List[T]:
     if not t.tails:
         return (L[t.head].type, t)
@@ -425,10 +425,11 @@ def lentqenode(G, t):
         return [0, 1]
 
     if isinstance(t, int):
-        x = [G.analyses[t][0], 0]
-        return x
+        return [G.analyses[t][0], 0]
 
-    return list(reduce(lambda acc, x: [acc[0] + x[0], acc[1] + x[1]], map(partial(lentqenode, G), t.tails), [1, 0]))
+    return list(reduce(lambda acc, x: [acc[0] + x[0], acc[1] + x[1]],
+                       map(partial(lentqenode, G), t.tails),
+                       [1, 0]))
 
 def contract(G: EGraph, enode: ENode):
     tails = []
@@ -569,16 +570,18 @@ def kkstack(G, xs, ghosts):
         n, nargs = lentqenode(G, ghost)
         lghost = n + nargs
 
+        # print(f'{ghost=} {lghost=} {}')
+
         k = 0
         for x, lx in zip(xs, xlengths):
             c = countin(G, x, ghost)
             if c > 0:
                 s = c * (n - nargs - 1) - lghost
-            else: # we're always taking some extra ghosts
+            else:
                 s = -np.inf
 
-            k += np.exp2(offset - lx + s) * ogk
-            # k += np.exp2(+s) * ogk
+            # k += np.exp2(offset - lx + s) * ogk
+            k += s
 
         ghostheap.push(k, ghost)
 

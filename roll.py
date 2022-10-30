@@ -17,25 +17,78 @@ def bakeroll(fpath: str, quantize: int = 32, staccato: bool = True) -> np.ndarra
     for m in track:
         ctime += round(m.time / ticksatom)
 
-    grid = zeros((88, ctime+1), np.int8)
-    starts = zeros(88, np.uint32)
+    grid = zeros((128, ctime+1), np.int8)
+    starts = zeros(128, np.uint32)
 
     ctime = 0
     for m in track:
         ctime += round(m.time / ticksatom)
 
         if m.type == 'note_off' or (m.type == 'note_on' and m.velocity == 0):
-            start = starts[-m.note]
+            start = starts[m.note]
 
-            grid[-m.note, start] = ONSET
+            grid[m.note, start] = ONSET
 
             if not staccato:
-                grid[-m.note, start+1:ctime] = TAIL
+                grid[m.note, start+1:ctime] = TAIL
 
         elif m.type == 'note_on':
-            starts[-m.note] = ctime
+            starts[m.note] = ctime
 
     return grid
+
+roots = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B']
+intervals = ['1', 'b2', '2', 'b3', '3', '4', 'b5', '5', 'b6', '6', 'b7', '7', '8', 'b9', '9', 'b10', '10', '11', 'b12', '12', 'b13', '13', 'b14', '14', '15']
+class Note(NamedTuple):
+    pitch: int
+    len: int
+    jump: int
+
+    def __repr__(self):
+        sign = '-' if self.jump < 0 else ''
+        if abs(self.jump) < len(intervals):
+            interval = intervals[abs(self.jump)]
+        else:
+            interval = f'${self.jump}'
+
+        return f'({roots[self.pitch % 12]} [{self.len}] @ {sign}{interval})'
+
+def bakeline(fpath: str, quantize: int = 32) -> np.ndarray:
+    midi = MidiFile(fpath)
+    midi.ticks_per_beat # per 1/4
+
+    # per 1/32 {//8} or 1/16 {//4}
+    ticksatom = midi.ticks_per_beat // (quantize // 4)
+
+    track = midi.tracks[np.argmax(ap(len, midi.tracks))]
+
+    ctime = 0
+    for m in track:
+        ctime += round(m.time / ticksatom)
+
+    starts = zeros(128, int)
+    prev = None
+    out = []
+
+    ctime = 0
+    for m in track:
+        ctime += round(m.time / ticksatom)
+
+        if m.type == 'note_off' or (m.type == 'note_on' and m.velocity == 0):
+            start = starts[m.note]
+
+            if prev is None:
+                prev = m.note
+
+            mag = m.note - prev
+            sign = np.sign(mag)
+            out.append(Note(m.note, ctime-start, sign * abs(mag % 24)))
+            prev = m.note
+
+        elif m.type == 'note_on':
+            starts[m.note] = ctime
+
+    return out
 
 def midiroll(grid: np.ndarray, fpath: str, quantize: int = 32) -> MidiFile:
     opennotes = zeros(88, bool)
@@ -60,7 +113,7 @@ def midiroll(grid: np.ndarray, fpath: str, quantize: int = 32) -> MidiFile:
                     dt = 0
 
                 opennotes[note] = False
-                track.append(Message('note_off', note=88-note, time=dt * ticksatom))
+                track.append(Message('note_off', note=note, time=dt * ticksatom))
                 lasteventtime = ctime
 
         # open notes
@@ -72,7 +125,7 @@ def midiroll(grid: np.ndarray, fpath: str, quantize: int = 32) -> MidiFile:
                 dt = 0
 
             opennotes[note] = True
-            track.append(Message('note_on', note=88-note, time=dt * ticksatom))
+            track.append(Message('note_on', note=note, time=dt * ticksatom))
             lasteventtime = ctime
 
     midi.tracks.append(track)
@@ -141,6 +194,7 @@ def shardroll(grid: np.ndarray, L: int = 32, every: bool = False) -> np.ndarray:
 
     return forceunique(shards)
 
+from itertools import cycle
 def almostchew(fpath, rolen=40, maxlen=10, staccato=True, scale=True, quantize=16):
     roll = bakeroll(fpath, quantize=quantize, staccato=staccato)
     roll = roll[:, :rolen]
@@ -172,6 +226,10 @@ def almostchew(fpath, rolen=40, maxlen=10, staccato=True, scale=True, quantize=1
     X = wholeshards(roll, maxlen=maxlen)
 
     return roll, X, offset
+
+def sh(roll):
+    iimshow(roll[::-1])
+    return
 
 if __name__ == '__main__':
     quantize = 32

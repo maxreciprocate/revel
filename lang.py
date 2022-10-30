@@ -29,7 +29,7 @@ def tolang(L, ast) -> T:
             return T(L.index(head), tuple(tolang(L, t) for t in tails))
         case [var]:
             return tolang(L, var)
-        case hole if hole[0].isupper() or hole[0] == '.':
+        case hole if hole[0].isupper() or hole[0] == '.' or hole[0] == '$':
             return hole
         case head if (ind := L.index(head)) is not None:
             return T(ind)
