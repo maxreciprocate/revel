@@ -1,4 +1,0 @@
-| lang.py   | λ-calculus implementation |
-| egraph.py | e-graph implementation    |
-| nlist.py  | number-list language      |
-| decon.py  | scales language           |
