@@ -1,6 +1,8 @@
-from importblob import *
-from roll import *
+from blob import *
+from numba import njit
 
+TAIL = 0x1
+ONSET = 0x2
 MOVE = 0x3
 NEGMOVE = 0x4
 UPMOVE = 0x5
@@ -8,11 +10,11 @@ DOWNMOVE = 0x6
 SAVESTATE = 0x7
 RESUMESTATE = 0x8
 
-def move(d, bs):
-    return [(MOVE, d)] + bs
+def move(bs):
+    return [(MOVE, 1)] + bs
 
-def neg(d, bs):
-    return [(NEGMOVE, d)] + bs
+def neg(bs):
+    return [(NEGMOVE, 1)] + bs
 
 def up(d, bs):
     return [(UPMOVE, d)] + bs

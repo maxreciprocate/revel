@@ -1,5 +1,6 @@
 from blob import *
 from mido import MidiFile, MidiTrack, Message, MetaMessage
+from itertools import cycle
 
 TAIL = 0x1
 ONSET = 0x2
@@ -38,7 +39,7 @@ def bakeroll(fpath: str, quantize: int = 32, staccato: bool = True) -> np.ndarra
     return grid
 
 roots = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B']
-intervals = ['1', 'b2', '2', 'b3', '3', '4', 'b5', '5', 'b6', '6', 'b7', '7', '8', 'b9', '9', 'b10', '10', '11', 'b12', '12', 'b13', '13', 'b14', '14', '15']
+intervals = ['1', 'b2', '2', 'b3', '3', '4', 'b5', '5', 'b6', '6', 'b7', '7']
 class Note(NamedTuple):
     pitch: int
     len: int
@@ -194,10 +195,10 @@ def shardroll(grid: np.ndarray, L: int = 32, every: bool = False) -> np.ndarray:
 
     return forceunique(shards)
 
-from itertools import cycle
-def almostchew(fpath, rolen=40, maxlen=10, staccato=True, scale=True, quantize=16):
+def rolled(fpath, length=None, shardlen=10, staccato=True, scale=False, quantize=16):
     roll = bakeroll(fpath, quantize=quantize, staccato=staccato)
-    roll = roll[:, :rolen]
+    if length is not None:
+        roll = roll[:, :length]
 
     if scale:
         HMINOR = cycle([2, 1, 2, 2, 1, 3, 1])
@@ -217,29 +218,16 @@ def almostchew(fpath, rolen=40, maxlen=10, staccato=True, scale=True, quantize=1
 
         roll = roll[inds[::-1]]
 
-    notes = np.where(roll > 0)[0]
+    notes = np.where(roll)[0]
     lower, upper = max(0, notes.min()-2), min(88, notes.max()+2)
-    roll = roll[lower:upper, :]
+    horizon = np.where(roll)[1].max()+1
+    roll = roll[lower:upper, :horizon]
 
     offset = roll[:, 0].argmax()
-    # X = shardroll(roll, 20, every=True)
-    X = wholeshards(roll, maxlen=maxlen)
+    shards = wholeshards(roll, maxlen=shardlen)
 
-    return roll, X, offset
-
-def sh(roll):
-    iimshow(roll[::-1])
-    return
+    return roll, offset, shards
 
 if __name__ == '__main__':
-    quantize = 32
-
-    # grid = bakeroll('../sms/tunes/Game Over.mid', quantize=quantize)
-    roll, X, offset = almostchew('../sms/tunes/Game Over.mid', rolen=23, scale=False)
-
+    roll, X, offset = rolled('tunes/the-lick.mid')
     iimshow(roll)
-    # grid = bakeroll('../sms/opening.mid', quantize=quantize)
-    # m = midiroll(grid, '../sms/opening0.mid', quantize=quantize)
-
-    # grid = bakeroll('fonts/kars-break.mid', quantize=quantize)
-    # midiroll(grid, '../sms/kars-break0.mid', quantize=quantize)

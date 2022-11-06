@@ -1,5 +1,8 @@
+import sys; sys.path.append('.')
 from egraph import *
-from roll import *
+from data import T, Term, Type
+from roll import bakeroll
+from lang import grepr
 
 def note(root, scale, index, next):
     return [(root + scales[scale][index]) % 12] + next
@@ -39,6 +42,31 @@ scalesmap = {name: ap(lambda s: tointerval[s], ints.split())
              for name, ints in scalesints.items()}
 scales = ap(array, scalesmap.values())
 
+L = Language([
+    Term([], Type('note'), repr='nø'),
+    Term([], Type('d'), repr='dø'),
+    Term([], Type('index'), repr='iø'),
+    Term(multindex, Type('index'), [Type('N'), Type('index')], repr='@'),
+    *[Term(n, Type('N'), repr=str(n)) for n in range(1, max(map(len, scales))+1)],
+    *[Term(ind, Type('scale'), repr=scale) for ind, scale in enumerate(scalesmap.keys())],
+    *[Term(n, Type('root'), repr=':' + roots[n]) for n in range(12)],
+    Term(note, Type('note'), [Type('root'), Type('scale'), Type('index')], repr='*'),
+    Term('cons', Type('L'), [Type('note'), Type('L')], repr='+'),
+    *[Term(f"+{root}", Type('note'), [Type('note')], repr=f"+{root}") for root in roots],
+    Term('loop', Type('index'), [Type('N'), Type('N')], repr='loop'),
+    Term('+1', Type('N'), [Type('N')], repr='+1'),
+    Term('-1', Type('N'), [Type('N')], repr='-1'),
+], type=Type('d'))
+
+lastnum = [l for l in L if l.repr.isdigit()][-1].repr
+
+scaleinds = [ind for ind, l in enumerate(L) if l.type == Type('scale')]
+scaleinds = range(min(scaleinds), max(scaleinds) + 1)
+
+indexinds = [ind for ind, l in enumerate(L) if l.type == Type('N')]
+indexinds = range(min(indexinds), max(indexinds) + 1)
+Q = ones(12).cumsum().astype(int)
+
 def ctxfn(G, enode: ENode):
     if enode.head == L.index('@'):
         v = G.analyses[enode.tails[1]][2]
@@ -77,6 +105,32 @@ def levelterm(L: Language, t: T, end: int) -> List[T]:
 
     return out
 
+def stagerules(L: Language, G: EGraph):
+    fuseind = partial(fuse, L, G, (L.index('@'), L.index('loop')), L.index('iø'))
+
+    rules = []
+    for ri, root in enumerate(roots):
+        for scale, tones in scalesmap.items():
+            for i, n in enumerate(tones):
+                rule = f"+{roots[(n+ri) % 12]} ~> (* :{roots[ri]} {scale} (@ {scale} {i+1} iø))"
+                rules.append(rule)
+
+    rules = rewrites(L, *rules)
+    global incloop
+    lincloop = partial(incloop, G)
+
+    langrws = [
+        (G.addexpr(L%"(+ (* R S I1) (+ (* R S I2) ...))", True), (L%"(+ (* R S I) ...)", {'I': (fuseind, '(I2, I1)')})),
+        (G.addexpr(L%"(@ S I2 (@ S I1 ...))", True), (L%"(@ S +1 (@ S I1 ...))", "I2 == I1 % S + 1")),
+        (G.addexpr(L%"(@ S I2 (@ S I1 ...))", True), (L%"(@ S -1 (@ S I1 ...))", "I1 == I2 % S + 1")),
+        (G.addexpr(L%"(@ S F (@ S F ...))", True), L%"(loop 2 S F ...)"),
+        (G.addexpr(L%"(@ S F (loop N S F ...))", True), (L%"(loop NN S F ...)", {'NN': (lincloop, '(N,)')})),
+        (G.addexpr(L%"(+ (* R S (loop N S F (@ S 1 iø))) ...)", True), (L%"(+ (* R S (loop NN S F iø)) ...)", {'NN': (lincloop, '(N,)')}))
+    ]
+
+    rules.extend(langrws)
+    return rules
+
 def annotatescales(L, name, voice, term):
     annotations = [None] * len(voice)
     ind = 0
@@ -110,7 +164,11 @@ def annotatescales(L, name, voice, term):
 
                      ops.append(f'loop {L[times].repr} {op}')
 
-        annotations[_ind] = (f'{key} {scale}', f'({", ".join(ops)})')
+        # single root note
+        if len(ops) == 1 and ops[0] == '1':
+            annotations[_ind] = (f'{key} ', '')
+        else:
+            annotations[_ind] = (f'{key} {scale}', f'({", ".join(ops)})')
 
     from music21 import stream, note, duration, converter, metadata
     score = converter.parse(name, quantizePost=False)
@@ -134,24 +192,6 @@ def annotatescales(L, name, voice, term):
 
     score.show('musicxml')
 
-L = Language([
-    Term([], '?note', repr='nø'),
-    Term([], '?d', repr='dø'),
-    Term([], '?index', repr='iø'),
-    Term(multindex, '?index', ['?N', '?index'], repr='@'),
-    *[Term(n, '?N', repr=str(n)) for n in range(1, max(map(len, scales))+1)],
-    *[Term(ind, '?scale', repr=scale) for ind, scale in enumerate(scalesmap.keys())],
-    *[Term(n, '?root', repr=':' + roots[n]) for n in range(12)],
-    Term(note, '?note', ['?root', '?scale', '?index'], repr='*'),
-    Term('cons', '?L', ['?note', '?L'], repr='+'),
-    *[Term(f"+{root}", '?note', ['?note'], repr=f"+{root}") for root in roots],
-    Term('loop', '?index', ['?N', '?N'], repr='loop'),
-    Term('+1', '?N', ['?N'], repr='+1'),
-    Term('-1', '?N', ['?N'], repr='-1'),
-], type='?d')
-
-lastnum = [l for l in L if l.repr.isdigit()][-1].repr
-
 def weightenode(G: EGraph, enode: ENode) -> float:
     if L.index('+C') <= enode.head <= L.index('+B'):
         return np.inf
@@ -164,13 +204,6 @@ def weightenode(G: EGraph, enode: ENode) -> float:
 
     return 1 + sum(G.analyses[tail][0] for tail in enode.tails)
 
-scaleinds = [ind for ind, l in enumerate(L) if l.type == '?scale']
-scaleinds = range(min(scaleinds), max(scaleinds) + 1)
-
-indexinds = [ind for ind, l in enumerate(L) if l.type == '?N']
-indexinds = range(min(indexinds), max(indexinds) + 1)
-Q = ones(12).cumsum().astype(int)
-
 def bakein(midifpath):
     if midifpath.startswith('random'):
         return randint(12, size=20)
@@ -180,32 +213,6 @@ def bakein(midifpath):
     voice = midivoice[np.nonzero(midivoice)]
     voice = voice % 12
     return voice
-
-def stagerules(L: Language, G: EGraph):
-    fuseind = partial(fuse, L, G, (L.index('@'), L.index('loop')), L.index('iø'))
-
-    rules = []
-    for ri, root in enumerate(roots):
-        for scale, tones in scalesmap.items():
-            for i, n in enumerate(tones):
-                rule = f"+{roots[(n+ri) % 12]} ~> (* :{roots[ri]} {scale} (@ {scale} {i+1} iø))"
-                rules.append(rule)
-
-    rules = rewrites(L, *rules)
-    global incloop
-    lincloop = partial(incloop, G)
-
-    langrws = [
-        (G.addexpr(L%"(+ (* R S I1) (+ (* R S I2) ...))", True), (L%"(+ (* R S I) ...)", {'I': (fuseind, '(I2, I1)')})),
-        (G.addexpr(L%"(@ S I2 (@ S I1 ...))", True), (L%"(@ S +1 (@ S I1 ...))", "I2 == I1 % S + 1")),
-        (G.addexpr(L%"(@ S I2 (@ S I1 ...))", True), (L%"(@ S -1 (@ S I1 ...))", "I1 == I2 % S + 1")),
-        (G.addexpr(L%"(@ S F (@ S F ...))", True), L%"(loop 2 S F ...)"),
-        (G.addexpr(L%"(@ S F (loop N S F ...))", True), (L%"(loop NN S F ...)", {'NN': (lincloop, '(N,)')})),
-        (G.addexpr(L%"(+ (* R S (loop N S F (@ S 1 iø))) ...)", True), (L%"(+ (* R S (loop NN S F iø)) ...)", {'NN': (lincloop, '(N,)')}))
-    ]
-
-    rules.extend(langrws)
-    return rules
 
 def render(midipath, midi):
     G = EGraph(weightenode, ctxfn)
@@ -222,11 +229,8 @@ def render(midipath, midi):
 
     return opt
 
-def getkalon(L, history, source):
-    G = EGraph(weightenode, ctxfn)
-    return kkalon(L, G, totree(L, source), totree(L, history), stagerules(L, G), depth=3, verb=True)
-
 if __name__ == '__main__':
     midipath = sys.argv[1] if len(sys.argv) > 1 else "tunes/barry-harris.mid"
     midi = bakein(midipath)
     render(midipath, midi)
+

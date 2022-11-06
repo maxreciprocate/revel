@@ -1,120 +1,74 @@
 from blob import *
-from q import *
-
-class T(NamedTuple):
-    head: int
-    tails: tuple = tuple()
-
-    def __repr__(self):
-        if self.tails:
-            return f"({self.head} {' '.join(map(repr, self.tails))})"
-
-        return str(self.head)
-
-class Term(NamedTuple):
-    head: int
-    type: type
-    tailtypes: list = []
-    forbidden: list = []
-    repr: str = '?'
-
-    def __repr__(self):
-        return self.repr
-
-def tolang(L, ast) -> T:
-    match ast:
-        case [ast] if isinstance(ast, list):
-            return tolang(L, ast)
-        case [head, *tails] if len(tails):
-            return T(L.index(head), tuple(tolang(L, t) for t in tails))
-        case [var]:
-            return tolang(L, var)
-        case hole if hole[0].isupper() or hole[0] == '.' or hole[0] == '$':
-            return hole
-        case head if (ind := L.index(head)) is not None:
-            return T(ind)
-        case debruijn if (index := int(debruijn)) < 0:
-            return T(index)
-        case _:
-            raise ValueError(f"{ast}, it's all greek to me")
+from data import Type, TypeView, Term, T
+from bits import create_mask, select_mask
 
 class Language:
-    def __init__(self, core, type=None):
-        self.core = core
+    def __init__(self, axioms, type: Type):
+        self.axioms = axioms
         self.invented = []
         self.type = type
+        self.update_types()
 
-        self.infer()
-
-    def infer(self):
-        # keep the ordering
-        self.gammas = self.core + self.invented
-        # tau -> [gind]
+    def update_types(self):
+        # keep this ordering
+        self.terms = self.axioms + self.invented
+        # mapping type -> [term_ix]
         self.bytype = defaultdict(list)
 
-        # fill type pool
-        for gind, g in enumerate(self):
-            self.bytype[g.type].append(gind)
+        # fill in type pool
+        for ix, term in enumerate(self):
+            self.bytype[term.type].append(ix)
 
-        # reconstruct gammas
-        for gind, g in enumerate(self):
-            newtailtypes = []
+        # reconstruct terms
+        for term_ix, term in enumerate(self):
+            updated_tailtypes = []
 
-            for tind, (tailtype, forbidden) in enumerate(zip_longest(g.tailtypes, g.forbidden)):
+            for tail_ix, (tailtype, forbidden) in enumerate(zip_longest(term.tailtypes, term.forbidden)):
                 forbidden = forbidden or []
-                generictype = f"{tailtype.split(':')[0]}" if ':' in tailtype else tailtype
-                # sieve forbidden ginds
-                ginds = [ind for ind in self.bytype[generictype] if not self[ind].repr in forbidden]
-                specifictype = f"{generictype}:{g.repr}:{tind}"
+                # sieve forbidden funcs
+                ixs = [ix for ix in self.bytype[tailtype] if not self[ix].repr in forbidden]
+                unique_type = Type(tailtype.type, term.repr, tail_ix)
 
-                self.bytype[specifictype] = ginds
-                newtailtypes.append(specifictype)
+                self.bytype[unique_type] = ixs
+                updated_tailtypes.append(unique_type)
 
-            self.gammas[gind] = Term(g.head, g.type, newtailtypes, g.forbidden, g.repr)
+            self.terms[term_ix] = term._replace(tailtypes=updated_tailtypes)
 
-        bytype = {tau: array(ginds) for tau, ginds in self.bytype.items()}
-        self.bytype = bytype
-        self.rbytype = {tau: [self.gammas[gind] for gind in ginds] for tau, ginds in self.bytype.items()}
+        self.bytype = {type: array(ixs) for type, ixs in self.bytype.items()}
+        self.rbytype = {type: [self.terms[ix] for ix in ixs] for type, ixs in self.bytype.items()}
+        self.views = make_views(self)
 
-    def solder(self, Q=None):
-        if Q is None:
-            Q = {tau: -np.log2(ones(len(gs))/len(gs)) for tau, gs in self.bytype.items()}
-
-        taus = list(self.bytype.keys())
-        for tau in taus:
-            qs, sinds = np.sort(Q[tau]), np.argsort(Q[tau])
-            qs = ap(lambda x: round(x, 1), qs)
-            gs = ap(lambda gind: self[gind].repr, np.atleast_1d(array(self.bytype[tau])[sinds]))
-            print(f'{tau} ~ {list(zip(gs, qs))}')
-
-        self.views = multicore(multiview, zip(repeat(self), repeat(Q), nsplit(ncores, taus)))
-        if isinstance(self.views, list):
-            self.views = reduce(lambda acc, x: acc | x, self.views, {})
+        for type, view in self.views.items():
+            print(type)
+            pprint(view._asdict())
+            for mask in view.masks:
+                for (mask, last, leap) in mask:
+                    print(f'{bin(mask)=}, {bin(last)=}, {bin(leap)=}')
 
     def reset(self):
         self.invented = []
-        self.infer()
+        self.update_types()
 
-    def add(self, g):
-        self.invented.append(g)
-        self.gammas = self.core + self.invented
+    def add(self, term):
+        self.invented.append(term)
+        self.terms = self.axioms + self.invented
 
-    def __getitem__(self, ind):
-        if isinstance(ind, (int, np.int64)):
-            return self.gammas[ind]
+    def __getitem__(self, ix):
+        if isinstance(ix, (int, np.int64)):
+            return self.terms[ix]
 
-        return self.gammas[self.index(ind)]
+        return self.terms[self.index(ix)]
 
     def __len__(self):
-        return len(self.gammas)
+        return len(self.terms)
 
     def __repr__(self):
-        return repr(self.gammas)
+        return repr(self.terms)
 
     def index(self, repr: str):
-        for ind, g in enumerate(self.gammas):
-            if g.repr == repr:
-                return ind
+        for ix, t in enumerate(self.terms):
+            if t.repr == repr:
+                return ix
 
         return None
 
@@ -122,7 +76,6 @@ class Language:
         return len(self.invented)
 
     def __mod__(self, expr: str):
-        # return interpret(self, parse(expr))
         return tolang(self, parse(expr))
 
     def __call__(self, term: T):
@@ -134,48 +87,135 @@ class Language:
     def __lt__(self, term: T):
         return grepr(self, term)
 
-def grepr(L, g):
-    if not isinstance(g, (T, int)):
-        return g
+def tolang(L: Language, ast) -> T:
+    match ast:
+        case [ast] if isinstance(ast, list):
+            return tolang(L, ast)
+        case [head, *tails] if len(tails):
+            return T(L.index(head), tuple(tolang(L, t) for t in tails))
+        case [var]:
+            return tolang(L, var)
+        case hole if hole[0].isupper() or hole[0] == '.' or hole[0] == '$':
+            return hole
+        case head if (ix := L.index(head)) is not None:
+            return T(ix)
+        case debruijn if (ix := int(debruijn)) < 0:
+            return T(ix)
+        case _:
+            raise ValueError(f"{ast}, it's all greek to me")
 
-    if isinstance(g.head, T):
-        if g.tails:
-            return f"(λ[{g.head}]. {' '.join([grepr(L, t) for t in g.tails])})"
+def make_views(L):
+    views = {}
+    # segragate atoms/funcs for each type
+    for type, ixs in L.bytype.items():
+        atoms_ixs = [ix for ix in ixs if len(L[ix].tailtypes) == 0]
+        funcs_ixs = [ix for ix in ixs if len(L[ix].tailtypes) >= 1]
+        natoms = len(atoms_ixs)
+        nfuncs = len(funcs_ixs)
+        views[type] = TypeView(natoms, nfuncs, atoms_ixs, funcs_ixs)
 
-        return f"λ[{g.head}]"
+    # create masks for bitstrings
+    bytype_masks = {}
+    for type, typeview in views.items():
+        if typeview.nfuncs == 0:
+            continue
 
-    if isinstance(g.head, int) and g.head < 0:
-        return str(g.head)
+        bitstring = [0] * math.ceil(np.log2(typeview.nfuncs))
+        func_mask = create_mask(bitstring, 0, typeview, func=True)
 
-    if not g.tails:
-        return L[g.head].repr
+        max_bit = 32
+        masks, leaps = [], []
+        for fix in typeview.funcs_ixs:
+            tailtypes = L[fix].tailtypes
+            func_bitstring = copy(bitstring)
 
-    return f"({L[g.head].repr} {' '.join([grepr(L, t) for t in g.tails])})"
+            while len(func_bitstring) < max_bit:
+                for tailtype in tailtypes:
+                    tail_typeview = views[tailtype]
 
-def length(g: T) -> int:
-    if isinstance(g, (int, str)):
+                    if tail_typeview.nfuncs == 0:
+                        nbits_allocated = sum(t == tailtype for t in func_bitstring)
+                        if 2 ** nbits_allocated > tail_typeview.natoms:
+                            continue
+
+                    func_bitstring.append(tailtype)
+
+            fix_masks = [create_mask(func_bitstring, t, views[t]) for t in tailtypes]
+            masks.append(fix_masks)
+
+        views[type] = typeview._replace(masks=masks, func_mask=func_mask)
+
+    return views
+
+@lru_cache(maxsize=None)
+def maketree(L, type, n):
+    natoms, nfuncs, atoms_ixs, funcs_ixs, func_mask, masks = L.views[type]
+
+    if n < natoms:
+        return T(atoms_ixs[n])
+
+    n -= natoms
+
+    func_mask, func_last, func_leap = func_mask
+    if func_mask > 0 and n >= func_last:
+        n += (n // func_last) * func_leap
+
+    func_ix = select_mask(n, func_mask)
+
+    func = funcs_ixs[func_ix]
+    tailtypes = L[func].tailtypes
+
+    tails = []
+    for tailtype, (tail_mask, tail_last, tail_leap) in zip(tailtypes, masks[func_ix]):
+        if n >= tail_last:
+            n += (n // tail_last) * tail_leap
+
+        tails.append(maketree(L, tailtype, select_mask(n, tail_mask)))
+
+    return T(func, tuple(tails))
+
+def grepr(L, t):
+    if not isinstance(t, (T, int)):
+        return t
+
+    if isinstance(t.head, T):
+        if t.tails:
+            return f"(λ[{t.head}]. {' '.join([grepr(L, t) for t in t.tails])})"
+
+        return f"λ[{t.head}]"
+
+    if isinstance(t.head, int) and t.head < 0:
+        return str(t.head)
+
+    if not t.tails:
+        return L[t.head].repr
+
+    return f"({L[t.head].repr} {' '.join([grepr(L, t) for t in t.tails])})"
+
+def length(t: T) -> int:
+    if isinstance(t, (int, str)):
         return 1
 
-    return 1 + sum(map(length, g.tails))
+    return 1 + sum(map(length, t.tails))
 
-def evalg(G, args, g):
+def evalg(L, args, t):
     # debuijn index
-    if isinstance(g.head, int) and g.head < 0:
-        return args[g.head]
+    if isinstance(t.head, int) and g.head < 0:
+        return args[t.head]
 
     # atom
-    if not g.tails:
-        return G[g.head].head
+    if not t.tails:
+        return L[t.head].head
 
     # application
-    gamma = G[g.head]
-    tails = tuple([evalg(G, args, tail) for tail in g.tails])
+    term = L[t.head]
+    tails = tuple([evalg(L, args, tail) for tail in t.tails])
 
     # abstraction
-    if isinstance(gamma.head, T):
-        return evalg(G, tails, gamma.head)
+    if isinstance(term.head, T):
+        return evalg(L, tails, term.head)
 
-    return gamma.head(*tails)
+    return term.head(*tails)
 
 def everysubtree(t):
     qq = [t]
@@ -316,24 +356,6 @@ def isequalholesub(ghost, tree):
 
     return True
 
-def biggerlength(g, n):
-    qq = [g]
-
-    while qq:
-        x = qq.pop(0)
-        n -= 1
-
-        if n < 0:
-            return True
-
-        if isinstance(x, str):
-            continue
-
-        for t in x.tails:
-            qq.append(t)
-
-    return False
-
 def pevalg(G, args, g):
     if isinstance(g.head, int) and g.head < 0:
         return args[g.head]
@@ -423,25 +445,24 @@ def parse(s: str):
 
     return ast
 
-@lru_cache(maxsize=1 << 20)
-def growtree(G, tau, n):
-    masks, fnumber, leapfrom, leapnumber, nops, natoms, opmapping, atommapping = G.views[tau]
+if __name__ == '__main__':
+    assert parse("(abc (ijk (xyz)))") == [['abc', ['ijk', ['xyz']]]]
+    assert parse("(-111 000 +111)") == [['-111', '000', '+111']]
+    assert parse("(λ (x) (x x))") == [['λ', ['x'], ['x', 'x']]]
 
-    if n < natoms:
-        return T(atommapping[n])
+    L = Language([
+        Term(0, Type('N'), repr='ø'),
+        Term('S', Type('N'), [Type('N')], [[]], repr='S'),
+    ], Type('N'))
 
-    assert nops > 0, f"there are not enough atoms to feed this {n}"
+    stime = time()
+    trees = set()
+    for n in range(1000):
+        tree = maketree(L, L.type, n)
+        if n < 100:
+            print(f'***** {n}', L<tree)
+        trees.add(tree)
 
-    n -= natoms
+    print(f'{time() - stime:.2f}s')
+    print(f'{len(trees)=}')
 
-    if n >= leapfrom:
-        times = n // leapfrom
-        n += times * leapnumber
-
-    opind = selectmask(2, n, fnumber)
-
-    op = opmapping[opind]
-    ttaus = G[op].tailtypes
-
-    return T(op, tuple([growtree(G, ttau, selectmask(2, n, mask))
-                         for mask, ttau in zip(masks[opind], ttaus)]))

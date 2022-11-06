@@ -1,0 +1,7 @@
+numpy==1.23.4
+numba==0.56.4
+mido==1.2.10
+music21==8.1.0
+matplotlib==3.6.1
+rich==12.6.0
+tqdm==4.64.1

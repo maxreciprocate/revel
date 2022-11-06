@@ -44,7 +44,7 @@ def pprint(d: dict):
 ap = lambda f, xs: list(map(f, xs))
 
 def log(xs):
-    return np.log(xs + 1e-24)
+    return np.log2(xs + 1e-24)
 
 def normed(xs):
     return (xs - xs.mean()) / (xs.std() + 1e-300)
@@ -101,7 +101,7 @@ def nsplit(n: int, xs):
 
 def multicore(fn, args):
     if ncores == 1:
-        return fn(*list(args)[0])
+        return [fn(*list(args)[0])]
 
     try:
         pool = mp.Pool(ncores)
@@ -136,7 +136,7 @@ matplotlib.rcParams["figure.titlesize"] = 12
 matplotlib.rcParams["figure.figsize"] = 15, 8
 
 if run_from_ipython():
-    matplotlib.rcParams["figure.dpi"] = 50
+    matplotlib.rcParams["figure.dpi"] = 20
 else:
     matplotlib.rcParams["figure.dpi"] = 100
 
@@ -158,9 +158,6 @@ def bar(ts, label=None, h=False):
         pyplot.bar(label[:len(ts)], ts)
 
 def imshow(im, save=False, interpolation='bicubic', cmap='hot'):
-    if isinstance(im, th.Tensor):
-        im = im.detach().numpy()
-
     fig = pyplot.figure(figsize=(20, 100))
     ax = fig.gca()
     ax.imshow(im, cmap=cmap, interpolation=interpolation)
@@ -179,5 +176,5 @@ def imshow(im, save=False, interpolation='bicubic', cmap='hot'):
 
 iimshow = lambda x: imshow(x, interpolation=None, cmap='hot')
 
-def savefig(filename):
-    pyplot.savefig(filename, bbox_inches='tight')
+def savefig(filename, format='png'):
+    pyplot.savefig(filename, bbox_inches='tight', format=format)

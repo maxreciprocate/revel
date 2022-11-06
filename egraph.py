@@ -1,9 +1,8 @@
 from blob import *
-from lang import *
-from rich import print as rprint
+from lang import Language
+from rich import print as pprint
 from tqdm.rich import tqdm
-
-# ■ ~
+from data import T, Term
 
 # back then, those were the times
 apply = lambda f, *args: f(*args)
@@ -303,10 +302,10 @@ class EGraph:
         return self.values[self.find(ind)]
 
     def __repr__(self):
-        rprint(self.hashcons)
-        rprint(self.values)
-        rprint(self.analyses)
-        rprint(self.parents)
+        pprint(self.hashcons)
+        pprint(self.values)
+        pprint(self.analyses)
+        pprint(self.parents)
         return ''
 
 def prettyenode(L: Language, G: EGraph, enode: ENode):
