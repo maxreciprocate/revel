@@ -3,81 +3,133 @@ from numba import njit
 
 TAIL = 0x1
 ONSET = 0x2
-MOVE = 0x3
-NEGMOVE = 0x4
-UPMOVE = 0x5
-DOWNMOVE = 0x6
-SAVESTATE = 0x7
-RESUMESTATE = 0x8
 
-def move(bs):
-    return [(MOVE, 1)] + bs
+MOVE = 0x0
+NEGMOVE = 0x1
+UPMOVE = 0x2
+DOWNMOVE = 0x3
+SAVESTATE = 0x4
+RESUMESTATE = 0x5
+PENUP = 0x6
+PENDOWN = 0x7
+ROTATE = 0x8
 
-def neg(bs):
-    return [(NEGMOVE, 1)] + bs
+def move(distance, next):
+    return [(MOVE, distance)] + next
 
-def up(d, bs):
-    return [(UPMOVE, d)] + bs
+def neg(distance, next):
+    return [(NEGMOVE, distance)] + next
 
-def down(d, bs):
-    return [(DOWNMOVE, d)] + bs
+def up(distance, next):
+    return [(UPMOVE, distance)] + next
 
-def loop(n, b, bs):
-    return b * n + bs
+def down(distance, next):
+    return [(DOWNMOVE, distance)] + next
 
-def savex(b, bs):
-    return [(SAVESTATE, SAVESTATE)] + b + [(RESUMESTATE, RESUMESTATE)] + bs
+def loop(n, brushes, next):
+    return brushes * n + next
+
+def savex(brushes, next):
+    return [(SAVESTATE, SAVESTATE)] + brushes + [(RESUMESTATE, RESUMESTATE)] + next
+
+def rotate(angle, next):
+    return [(ROTATE, angle)] + next
+
+def penup(brushes, next):
+    return [(PENUP, PENUP)] + brushes + [(PENDOWN, PENDOWN)] + next
 
 @njit
-def renderbrushes(brushes: np.ndarray, canvas: np.ndarray):
-    x, y = 0, 0
-    saved_x, saved_y = 0, 0
+def bresenham(canvas, x0, y0, x1, y1):
+    dx = x1 - x0
+    dy = y1 - y0
+
+    xsign = 1 if dx > 0 else -1
+    ysign = 1 if dy > 0 else -1
+
+    dx = abs(dx)
+    dy = abs(dy)
+
+    if dx > dy:
+        xx, xy, yx, yy = xsign, 0, 0, ysign
+    else:
+        dx, dy = dy, dx
+        xx, xy, yx, yy = 0, ysign, xsign, 0
+
+    D = 2*dy - dx
+    y = 0
+
+    for x in range(dx):
+        x_ = (x0 + x*xx + y*yx) % canvas.shape[0]
+        y_ = (y0 + x*xy + y*yy) % canvas.shape[1]
+        canvas[x_, y_] = TAIL
+
+        if D >= 0:
+            y += 1
+            D -= 2*dx
+        D += 2*dy
+
+@njit
+def render(brushes: np.ndarray, canvas: np.ndarray):
+    isdrawing = True
+    x, y, angle = 0, 0, 0
+    saved_x, saved_y, saved_angle = 0, 0, 0
     bound_y, bound_x = canvas.shape
 
-    for op, d in brushes:
+    for op, arg in brushes:
         if op == MOVE:
-            if 0 > x or x >= bound_x or 0 > y or y >= bound_y:
-                return x, y
+            end_x = x + np.cos(angle) * arg
+            end_y = y + np.sin(angle) * arg
 
-            canvas[y, x] = ONSET
-            x += 1
+            if isdrawing:
+                bresenham(canvas, round(x), round(y), round(end_x), round(end_y))
 
-            for _ in range(d-1):
-                if 0 > x or x >= bound_x or 0 > y or y >= bound_y:
-                    return x, y
+            x = round(end_x)
+            y = round(end_y)
 
-                canvas[y, x] = TAIL
-                x += 1
-
-        elif op == NEGMOVE:
-            x += d
-        elif op == UPMOVE:
-            y -= d
-        elif op == DOWNMOVE:
-            y += d
+        if op == PENDOWN:
+            isdrawing = True
+        elif op == PENUP:
+            isdrawing = False
+        elif op == ROTATE:
+            # temporary restriction on keeping everything int
+            # instead of casting every instruction to float
+            if arg == 0:
+                angle -= np.pi / 2
+            elif arg == 1:
+                angle += np.pi / 2
         elif op == SAVESTATE:
             saved_x = x
             saved_y = y
+            saved_angle = angle
         elif op == RESUMESTATE:
             x = saved_x
             y = saved_y
+            angle = saved_angle
 
     return x, y
 
-def stage(start: int, brushes: list):
-    xs = array(down(start, brushes), dtype=int)
-
+def stage(brushes: list):
     if len(brushes) == 0 or len(brushes[0]) == 0:
         return lambda x: x
 
-    return partial(renderbrushes, xs)
-
-def stagebrushes(start: int):
-    return partial(stage, start)
+    return partial(render, np.array(brushes))
 
 if __name__ == '__main__':
-    g = savex(move(4, neg(4, move(8, []))), loop(4, down(4, move(4, [])), []))
+    line = penup(move(8, []), move(8, []))
+    # brushes = savex(rotate(pi/6, line), rotate(pi/3, line))
+    # brushes = savex(rotate(1, line), line)
+    # brushes = move(2, rotate(1, move(2, (rotate(0, move(2, []))))))
+    brushes = loop(2, move(3, []), rotate(1, move(4, rotate(1, move(4, [])))))
 
-    canvas = zeros((20, 20), int)
-    stagebrushes(0)(g)(canvas)
+    brushes = np.array(brushes)
+
+    canvas = zeros((16, 16), int)
+    stime = time()
+    stage(brushes)(canvas)
+    print(f'first {(time() - stime)*1000:.6f}ms')
+
+    stime = time()
+    stage(brushes)(canvas)
+    print(f'jit-ed {(time() - stime)*1000:.6f}ms')
+
     iimshow(canvas)
