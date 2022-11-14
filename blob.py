@@ -136,7 +136,7 @@ matplotlib.rcParams["figure.titlesize"] = 12
 matplotlib.rcParams["figure.figsize"] = 15, 8
 
 if run_from_ipython():
-    matplotlib.rcParams["figure.dpi"] = 20
+    matplotlib.rcParams["figure.dpi"] = 60
 else:
     matplotlib.rcParams["figure.dpi"] = 100
 

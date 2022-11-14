@@ -1,0 +1,10 @@
+[package]
+name = "babble-this"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+babble = { git = "https://github.com/dcao/babble", rev = "deacc1130b656df5211a8d7cc442ac352fb46b50" }
+egg = { git = "https://github.com/dcao/egg", features = ["serde-1"] }

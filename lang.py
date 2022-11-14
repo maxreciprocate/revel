@@ -38,12 +38,13 @@ class Language:
         self.rbytype = {type: [self.terms[ix] for ix in ixs] for type, ixs in self.bytype.items()}
         self.views = make_views(self)
 
-        for type, view in self.views.items():
-            print(type)
-            pprint(view._asdict())
-            for mask in view.masks:
-                for (mask, last, leap) in mask:
-                    print(f'{bin(mask)=}, {bin(last)=}, {bin(leap)=}')
+        if os.environ.get('debug'):
+            for type, view in self.views.items():
+                print(type)
+                pprint(view._asdict())
+                for mask in view.masks:
+                    for (mask, last, leap) in mask:
+                        print(f'{bin(mask)=}, {bin(last)=}, {bin(leap)=}')
 
     def reset(self):
         self.invented = []
@@ -73,7 +74,7 @@ class Language:
         return None
 
     def __hash__(self):
-        return len(self.invented)
+        return sum(hash(term.head) for term in self.invented)
 
     def __mod__(self, expr: str):
         return tolang(self, parse(expr))
@@ -82,7 +83,7 @@ class Language:
         if isinstance(term, str):
             term = interpret(self, parse(term))
 
-        return evalg(self, (), term)
+        return evaltree(self, term)
 
     def __lt__(self, term: T):
         return grepr(self, term)
@@ -95,10 +96,10 @@ def tolang(L: Language, ast) -> T:
             return T(L.index(head), tuple(tolang(L, t) for t in tails))
         case [var]:
             return tolang(L, var)
-        case hole if hole[0].isupper() or hole[0] == '.' or hole[0] == '$':
-            return hole
         case head if (ix := L.index(head)) is not None:
             return T(ix)
+        case hole if hole[0].isupper() or hole[0] == '.' or hole[0] == '$':
+            return hole
         case debruijn if (ix := int(debruijn)) < 0:
             return T(ix)
         case _:
@@ -136,7 +137,9 @@ def make_views(L):
                     if tail_typeview.nfuncs == 0:
                         nbits_allocated = sum(t == tailtype for t in func_bitstring)
                         if 2 ** nbits_allocated > tail_typeview.natoms:
-                            continue
+                            # give room to other type if there are any
+                            if len(tailtypes) > 1:
+                                continue
 
                     func_bitstring.append(tailtype)
 
@@ -198,9 +201,9 @@ def length(t: T) -> int:
 
     return 1 + sum(map(length, t.tails))
 
-def evalg(L, args, t):
+def evaltree(L, t, args=()):
     # debuijn index
-    if isinstance(t.head, int) and g.head < 0:
+    if isinstance(t.head, int) and t.head < 0:
         return args[t.head]
 
     # atom
@@ -208,89 +211,17 @@ def evalg(L, args, t):
         return L[t.head].head
 
     # application
-    term = L[t.head]
-    tails = tuple([evalg(L, args, tail) for tail in t.tails])
+    f = L[t.head].head
+    tails = tuple([evaltree(L, tail, args) for tail in t.tails])
 
     # abstraction
-    if isinstance(term.head, T):
-        return evalg(L, tails, term.head)
+    if isinstance(f, T):
+        return evaltree(L, f, tails)
 
-    return term.head(*tails)
-
-def everysubtree(t):
-    qq = [t]
-
-    while qq:
-        n = qq.pop(0)
-        qq.extend(n.tails)
-        yield n
+    return f(*tails)
 
 def isequal(t1, t2):
     return t1.head == t2.head and all(isequal(tail1, tail2) for tail1, tail2 in zip(t1.tails, t2.tails))
-
-def flatten(xs):
-    for x in xs:
-        yield from x
-
-def allcombinations(xs):
-    return flatten(combinations(xs, n) for n in range(len(xs) + 1))
-
-def genrelease(G, g):
-    if not g.tails:
-        yield g
-        yield G[g.head].type
-        return
-
-    yield G[g.head].type
-    ghosttails = [genrelease(G, tail) for tail in g.tails]
-
-    for subtrees in product(*ghosttails):
-        yield T(g.head, tuple(subtrees))
-
-def maxdepth(g):
-    if isinstance(g, str | int):
-        return 0
-
-    if not g.tails:
-        return 0
-
-    return 1 + max(maxdepth(tail) for tail in g.tails)
-
-def lent(t: T | str):
-    "natoms+nops, nargs"
-    # types
-    if isinstance(t, str):
-        return [0, 1]
-    # eclass
-    if isinstance(t, int):
-        return [1, 0]
-
-    return list(reduce(lambda acc, x: [acc[0] + x[0], acc[1] + x[1]], map(lent, t.tails), [1, 0]))
-
-def isequalhole(t1, t2):
-    if t1.head != t2.head or len(t1.tails) != len(t2.tails):
-        return False
-
-    for tail1, tail2 in zip(t1.tails, t2.tails):
-        # hole
-        if isinstance(tail1, str) or isinstance(tail2, str):
-            continue
-
-        if not isequalhole(tail1, tail2):
-            return False
-
-    return True
-
-def extractargs(t, tholed, args):
-    "in exact places where is hole in a ghost returns what is living in the tree"
-    if not tholed.tails:
-        return
-
-    for tind, (tailholed, tail) in enumerate(zip(tholed.tails, t.tails)):
-        if isinstance(tailholed, str):
-            args.append(tail)
-        else:
-            extractargs(tail, tailholed, args)
 
 def rewrite(source, match, target, withargs=False):
     if not source.tails:
@@ -325,93 +256,34 @@ def rewrite(source, match, target, withargs=False):
 
     return source._replace(tails=tuple(newtails))
 
-def forceholes(t, tailtypes=None):
+def pevalg(L, t, args):
+    if isinstance(t.head, int) and t.head < 0:
+        return args[t.head]
+
     if not t.tails:
         return t
 
-    if tailtypes is None:
-        tailtypes = []
+    return t._replace(tails=tuple([pevalg(L, tail, args) for tail in t.tails]))
 
-    newtails = [None] * len(t.tails)
-    for tind, tail in enumerate(t.tails):
-        if isinstance(tail, str):
-            tailtypes.append(tail)
-            newtails[tind] = T(-len(tailtypes))
-        else:
-            newtails[tind] = forceholes(tail, tailtypes)
-
-    return t._replace(tails=tuple(newtails))
-
-def isequalholesub(ghost, tree):
-    "== while skipping holes"
-    if ghost.head != tree.head or len(ghost.tails) != len(tree.tails):
+def isnormal(L, t):
+    if t.head >= len(L.axioms):
         return False
 
-    for g, t in zip(ghost.tails, tree.tails):
-        if isinstance(g, str):
-            continue
+    return all(isnormal(L, tail) for tail in t.tails)
 
-        if not isequalholesub(g, t):
-            return False
-
-    return True
-
-def pevalg(G, args, g):
-    if isinstance(g.head, int) and g.head < 0:
-        return args[g.head]
-
-    if not g.tails:
-        return g
-
-    return g._replace(tails=tuple([pevalg(G, args, tg) for tg in g.tails]))
-
-def isnormal(G, g):
-    if g.head >= len(G.core):
-        return False
-
-    return all(isnormal(G, tg) for tg in g.tails)
-
-def normalize(G, g):
-    if g.head >= len(G.core):
+def normalize(L, t):
+    if t.head >= len(L.axioms):
         # get hiddentail
-        body = deepcopy(G[g.head].head)
+        body = deepcopy(L[t.head].head)
         # insert tails
-        body = pevalg(G, g.tails, body)
+        body = pevalg(L, body, t.tails)
 
-        while not isnormal(G, body):
-            body = normalize(G, body)
+        while not isnormal(L, body):
+            body = normalize(L, body)
 
         return body
 
-    return g._replace(tails=tuple([normalize(G, tg) for tg in g.tails]))
-
-def countghosts(G, alltrees, subtrees):
-    matches = defaultdict(int)
-
-    for ghost in releasetrees(G, subtrees):
-        if isinstance(ghost, str) or not ghost.tails:
-            continue
-
-        c = 0
-        for tree in alltrees:
-            if isequalholesub(ghost, tree):
-                c += 1
-
-        matches[ghost] = c
-
-    return matches
-
-def releasetrees(G, trees):
-    return flatten(genrelease(G, tree) for tree in trees)
-
-def everytail(G, spectaus, g):
-    "index of ttau in spectaus -> tail.head"
-    qq = [g]
-    while qq:
-        g = qq.pop(0)
-        qq.extend(g.tails)
-        for ttau, tail in zip(G[g.head].tailtypes, g.tails):
-            yield spectaus.index(ttau), tail.head
+    return t._replace(tails=tuple([normalize(L, tail) for tail in t.tails]))
 
 def parse(s: str):
     "Parse a string into an AST"
@@ -444,6 +316,29 @@ def parse(s: str):
         ind += 1
 
     return ast
+
+def flatten(xs):
+    for x in xs:
+        yield from x
+
+def everysubtree(t):
+    qq = [t]
+
+    while qq:
+        n = qq.pop(0)
+        qq.extend(n.tails)
+        yield n
+
+def lent(t: T | str):
+    "natoms+nops, nargs"
+    # types
+    if isinstance(t, str):
+        return [0, 1]
+    # eclass
+    if isinstance(t, int):
+        return [1, 0]
+
+    return list(reduce(lambda acc, x: [acc[0] + x[0], acc[1] + x[1]], map(lent, t.tails), [1, 0]))
 
 if __name__ == '__main__':
     assert parse("(abc (ijk (xyz)))") == [['abc', ['ijk', ['xyz']]]]
