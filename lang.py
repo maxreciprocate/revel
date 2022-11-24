@@ -54,11 +54,14 @@ class Language:
         self.invented.append(term)
         self.terms = self.axioms + self.invented
 
-    def __getitem__(self, ix):
-        if isinstance(ix, (int, np.int64)):
-            return self.terms[ix]
+    def __getitem__(self, x):
+        if isinstance(x, (int, np.int64)):
+            assert x >= 0
+            return self.terms[x]
 
-        return self.terms[self.index(ix)]
+        if (ix := self.index(x)) is None:
+            raise ValueError(f'there is no {x} in {self.terms}')
+        return self.terms[ix]
 
     def __len__(self):
         return len(self.terms)
@@ -74,7 +77,7 @@ class Language:
         return None
 
     def __hash__(self):
-        return sum(hash(term.head) for term in self.invented)
+        return sum(hash(term[0]) for term in self.invented)
 
     def __mod__(self, expr: str):
         return tolang(self, parse(expr))
@@ -88,20 +91,19 @@ class Language:
     def __lt__(self, term: T):
         return grepr(self, term)
 
-def tolang(L: Language, ast) -> T:
+
+def tolang(L: Language, ast: list) -> T:
     match ast:
         case [ast] if isinstance(ast, list):
             return tolang(L, ast)
-        case [head, *tails] if len(tails):
-            return T(L.index(head), tuple(tolang(L, t) for t in tails))
-        case [var]:
-            return tolang(L, var)
+        case [*ast] if len(ast):
+            return T(tolang(L, a) for a in ast)
         case head if (ix := L.index(head)) is not None:
-            return T(ix)
+            return ix
         case hole if hole[0].isupper() or hole[0] == '.' or hole[0] == '$':
             return hole
         case debruijn if (ix := int(debruijn)) < 0:
-            return T(ix)
+            return ix
         case _:
             raise ValueError(f"{ast}, it's all greek to me")
 
@@ -150,12 +152,12 @@ def make_views(L):
 
     return views
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=1<<20)
 def maketree(L, type, n):
     natoms, nfuncs, atoms_ixs, funcs_ixs, func_mask, masks = L.views[type]
 
     if n < natoms:
-        return T(atoms_ixs[n])
+        return atoms_ixs[n]
 
     n -= natoms
 
@@ -175,50 +177,71 @@ def maketree(L, type, n):
 
         tails.append(maketree(L, tailtype, select_mask(n, tail_mask)))
 
-    return T(func, tuple(tails))
+    return (func, *tails)
 
 def grepr(L, t):
-    if not isinstance(t, (T, int)):
+    if not isinstance(t, (T, int, np.int64)):
         return t
 
-    if isinstance(t.head, T):
-        if t.tails:
-            return f"(λ[{t.head}]. {' '.join([grepr(L, t) for t in t.tails])})"
+    if not isinstance(t, T):
+        t = T((t,))
 
-        return f"λ[{t.head}]"
+    head, *tails = t
 
-    if isinstance(t.head, int) and t.head < 0:
-        return str(t.head)
+    if isinstance(head, (int, np.int64)) and head < 0:
+        return str(t)
 
-    if not t.tails:
-        return L[t.head].repr
+    if isinstance(head, T):
+        if tails:
+            return f"(λ[{head}]. {' '.join([grepr(L, t) for t in tails])})"
 
-    return f"({L[t.head].repr} {' '.join([grepr(L, t) for t in t.tails])})"
+        return f"λ[{head}]"
+
+    if not tails:
+        return L[head].repr
+
+    return f"({L[head].repr} {' '.join([grepr(L, t) for t in tails])})"
 
 def length(t: T) -> int:
-    if isinstance(t, (int, str)):
+    if not isinstance(t, tuple):
         return 1
 
-    return 1 + sum(map(length, t.tails))
+    return sum(map(length, t))
 
-def evaltree(L, t, args=()):
-    # debuijn index
-    if isinstance(t.head, int) and t.head < 0:
-        return args[t.head]
+# this is overly complex because of some idiosyncraties i'm lazy to clean up
+def eval(L: Language, t: T, args=()):
+    if isinstance(t, (np.int64, int)):
+        if t < 0: # debruijn
+            if len(args) >= abs(t):
+                return args[t]
+            else:
+                return t
 
-    # atom
-    if not t.tails:
-        return L[t.head].head
+        return L[t].head
+    else:
+        head, *tails = t
+        if isinstance(head, (np.int64, int)):
+            if head < 0: # debruijn
+                if len(args) == 0:
+                    return t
+                if len(args) >= abs(head):
+                    head = args[head]
+                else:
+                    head = head
+            else:
+                head = L[head].head
 
-    # application
-    f = L[t.head].head
-    tails = tuple([evaltree(L, tail, args) for tail in t.tails])
+        if len(tails) == 0: # atom
+            return head
 
-    # abstraction
-    if isinstance(f, T):
-        return evaltree(L, f, tails)
+    tails = tuple([eval(L, tail, args) for tail in tails])
 
-    return f(*tails)
+    if isinstance(head, (np.int64, int)):
+        return (head, *tails)
+    if isinstance(head, T): # abstraction
+        return eval(L, head, tails)
+
+    return head(*tails)
 
 def isequal(t1, t2):
     return t1.head == t2.head and all(isequal(tail1, tail2) for tail1, tail2 in zip(t1.tails, t2.tails))
@@ -341,9 +364,49 @@ def lent(t: T | str):
     return list(reduce(lambda acc, x: [acc[0] + x[0], acc[1] + x[1]], map(lent, t.tails), [1, 0]))
 
 if __name__ == '__main__':
+    assert length((1, 1, 1)) == 3
+    assert length((((1,), (1,), (1,)), 1, 1)) == 5
+
     assert parse("(abc (ijk (xyz)))") == [['abc', ['ijk', ['xyz']]]]
     assert parse("(-111 000 +111)") == [['-111', '000', '+111']]
     assert parse("(λ (x) (x x))") == [['λ', ['x'], ['x', 'x']]]
+
+
+    TL = Language([
+        Term(add, Type('Int'), [Type('Int'), Type('Int')], repr='+'),
+        Term(1, Type('Int'), repr='1'),
+        Term(10, Type('Int'), repr='10'),
+    ], Type('Int'))
+
+
+    a0 = (0, 1, 1)
+    assert tolang(TL, parse("(+ 1 1)")) == a0
+    a1 = (0, a0, 1)
+    assert tolang(TL, parse("(+ (+ 1 1) 1)")) == a1
+    a2 = (0, a0, a0)
+    assert tolang(TL, parse("(+ (+ 1 1) (+ 1 1))")) == a2
+
+    am0 = (0, -1, 1)
+    assert tolang(TL, parse("(+ -1 1)")) == am0
+    am1 = (am0, a0)
+    assert tolang(TL, parse("((+ -1 1) (+ 1 1))")) == am1
+    am2 = (am0, am0)
+    assert tolang(TL, parse("((+ -1 1) (+ -1 1))")) == am2
+
+
+    assert eval(TL, TL%"(+ 1 1)") == 2
+    assert eval(TL, TL%"(+ (+ 1 1) 1)") == 3
+    assert eval(TL, TL%"(+ (+ 1 1) (+ 1 1))") == 4
+    assert eval(TL, TL%"((+ -1 1) 1)") == 2
+    assert eval(TL, TL%"((+ -1 -1) 1)") == 2
+    assert eval(TL, TL%"((+ -1 ((+ -1 -1) 1)) 10)") == 12
+    # hof
+    assert eval(TL, TL%"((-3 -2 -1) + 10 1)") == 11
+    assert eval(TL, TL%"((-3 -2 (-3 -1 -1)) + 10 1)") == 12
+    assert eval(TL, TL%"((-3 -2 (-3 -1 -1)) + ((-1 10 10) +) 1)") == 22
+    assert eval(TL, TL%"((-1) (-1))") == (-1,)
+    assert eval(TL, TL%"(((-1) (-1)) (-2))") == (-2,)
+
 
     L = Language([
         Term(0, Type('N'), repr='ø'),

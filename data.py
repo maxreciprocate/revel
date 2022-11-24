@@ -1,14 +1,6 @@
 from typing import NamedTuple
 
-class T(NamedTuple):
-    head: int
-    tails: tuple = tuple()
-
-    def __repr__(self):
-        if self.tails:
-            return f"({self.head} {' '.join(map(repr, self.tails))})"
-
-        return str(self.head)
+T = tuple
 
 class Term(NamedTuple):
     head: int
