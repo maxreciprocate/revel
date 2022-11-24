@@ -68,10 +68,11 @@ def bresenham(canvas, x0, y0, x1, y1):
             D -= 2*dx
         D += 2*dy
 
+defaultstate = (1, 0, 0, 0)
+
 @njit
-def render(brushes: np.ndarray, canvas: np.ndarray):
-    isdrawing = True
-    x, y, angle = 0, 0, 0
+def render(brushes: np.ndarray, canvas: np.ndarray, state=defaultstate):
+    isdrawing, x, y, angle = state
     saved_x, saved_y, saved_angle = 0, 0, 0
     bound_y, bound_x = canvas.shape
 
@@ -87,9 +88,9 @@ def render(brushes: np.ndarray, canvas: np.ndarray):
             y = round(end_y)
 
         if op == PENDOWN:
-            isdrawing = True
+            isdrawing = 1
         elif op == PENUP:
-            isdrawing = False
+            isdrawing = 0
         elif op == ROTATE:
             # temporary restriction on keeping everything int
             # instead of casting every instruction to float
@@ -106,19 +107,28 @@ def render(brushes: np.ndarray, canvas: np.ndarray):
             y = saved_y
             angle = saved_angle
 
-    return x, y
+    return isdrawing, x, y, angle
 
-def stage(brushes: list):
+def stage(brushes):
     if len(brushes) == 0 or len(brushes[0]) == 0:
-        return lambda x: x
+        return lambda *args: args[-1]
 
     return partial(render, np.array(brushes))
 
 if __name__ == '__main__':
-    line = penup(move(8, []), move(8, []))
+    # line = penup(move(8, []), move(8, []))
     # brushes = savex(rotate(pi/6, line), rotate(pi/3, line))
     # brushes = savex(rotate(1, line), line)
     # brushes = move(2, rotate(1, move(2, (rotate(0, move(2, []))))))
+
+    brushes = np.array(move(4, []))
+    canvas = zeros((10, 10), int)
+    state = render(brushes, canvas, (1, 16, 4, 0))
+    # starshow(canvas)
+    iimshow(canvas)
+
+# ■ ~
+
     brushes = loop(2, move(3, []), rotate(1, move(4, rotate(1, move(4, [])))))
 
     brushes = np.array(brushes)
@@ -132,4 +142,4 @@ if __name__ == '__main__':
     stage(brushes)(canvas)
     print(f'jit-ed {(time() - stime)*1000:.6f}ms')
 
-    iimshow(canvas)
+    starshow(canvas)
