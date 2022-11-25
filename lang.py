@@ -280,33 +280,43 @@ def rewrite(source, match, target, withargs=False):
     return source._replace(tails=tuple(newtails))
 
 def pevalg(L, t, args):
-    if isinstance(t.head, int) and t.head < 0:
-        return args[t.head]
+    if isinstance(t, (int, np.int64)):
+        if t < 0:
+            return args[t]
+        else:
+            return t
 
-    if not t.tails:
+    head, *tails = t
+    if not tails:
         return t
 
-    return t._replace(tails=tuple([pevalg(L, tail, args) for tail in t.tails]))
+    return (head, *(pevalg(L, tail, args) for tail in tails))
 
 def isnormal(L, t):
-    if t.head >= len(L.axioms):
-        return False
+    if isinstance(t, (int, np.int64)):
+        return t < len(L.axioms)
 
-    return all(isnormal(L, tail) for tail in t.tails)
+    return all(isnormal(L, tt) for tt in t)
 
 def normalize(L, t):
-    if t.head >= len(L.axioms):
+    if isinstance(t, (int, np.int64)):
+        if t < len(L.axioms):
+            return t
+        t = (t,)
+
+    head, *tails = t
+    if head >= len(L.axioms):
         # get hiddentail
-        body = deepcopy(L[t.head].head)
+        body = deepcopy(L[head].head)
         # insert tails
-        body = pevalg(L, body, t.tails)
+        body = pevalg(L, body, tails)
 
         while not isnormal(L, body):
             body = normalize(L, body)
 
         return body
 
-    return t._replace(tails=tuple([normalize(L, tail) for tail in t.tails]))
+    return (head, *[normalize(L, tail) for tail in tails])
 
 def parse(s: str):
     "Parse a string into an AST"
@@ -371,13 +381,15 @@ if __name__ == '__main__':
     assert parse("(-111 000 +111)") == [['-111', '000', '+111']]
     assert parse("(λ (x) (x x))") == [['λ', ['x'], ['x', 'x']]]
 
-
     TL = Language([
         Term(add, Type('Int'), [Type('Int'), Type('Int')], repr='+'),
         Term(1, Type('Int'), repr='1'),
         Term(10, Type('Int'), repr='10'),
     ], Type('Int'))
 
+    plus10 = Term(TL%"(+ -1 10)", Type('Int'), [Type('Int')], repr='+10')
+    TL.add(plus10)
+    TL.update_types()
 
     a0 = (0, 1, 1)
     assert tolang(TL, parse("(+ 1 1)")) == a0
@@ -407,6 +419,8 @@ if __name__ == '__main__':
     assert eval(TL, TL%"((-1) (-1))") == (-1,)
     assert eval(TL, TL%"(((-1) (-1)) (-2))") == (-2,)
 
+    assert normalize(TL, TL%"(+10 1)") == TL%"(+ 1 10)"
+    assert normalize(TL, TL%"(+10 (+10 1))") == TL%"(+ (+ 1 10) 10)"
 
     L = Language([
         Term(0, Type('N'), repr='ø'),
