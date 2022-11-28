@@ -1,32 +1,37 @@
 from blob import *
-from data import Type, TypeView, Term, T
+from data import Type, TypeView, Term
 from bits import create_mask, select_mask
+
+def length(t) -> int:
+    if not isinstance(t, tuple):
+        return 1
+    return sum(map(length, t))
 
 class Language:
     def __init__(self, axioms, type: Type):
         self.axioms = axioms
         self.invented = []
         self.type = type
-        self.update_types()
+        self.prepare()
 
-    def update_types(self):
+    def prepare(self):
         # keep this ordering
         self.terms = self.axioms + self.invented
         # mapping type -> [term_ix]
         self.bytype = defaultdict(list)
 
         # fill in type pool
-        for ix, term in enumerate(self):
+        for ix, term in enumerate(self.terms):
             self.bytype[term.type].append(ix)
 
         # reconstruct terms
-        for term_ix, term in enumerate(self):
+        for term_ix, term in enumerate(self.terms):
             updated_tailtypes = []
 
             for tail_ix, (tailtype, forbidden) in enumerate(zip_longest(term.tailtypes, term.forbidden)):
                 forbidden = forbidden or []
                 # sieve forbidden funcs
-                ixs = [ix for ix in self.bytype[tailtype] if not self[ix].repr in forbidden]
+                ixs = [ix for ix in self.bytype[tailtype] if not self.terms[ix].repr in forbidden]
                 unique_type = Type(tailtype.type, term.repr, tail_ix)
 
                 self.bytype[unique_type] = ixs
@@ -34,85 +39,37 @@ class Language:
 
             self.terms[term_ix] = term._replace(tailtypes=updated_tailtypes)
 
+        self.funcs = [term.head for term in self.terms]
         self.bytype = {type: array(ixs) for type, ixs in self.bytype.items()}
-        self.rbytype = {type: [self.terms[ix] for ix in ixs] for type, ixs in self.bytype.items()}
         self.views = make_views(self)
-
-        if os.environ.get('debug'):
-            for type, view in self.views.items():
-                print(type)
-                pprint(view._asdict())
-                for mask in view.masks:
-                    for (mask, last, leap) in mask:
-                        print(f'{bin(mask)=}, {bin(last)=}, {bin(leap)=}')
-
-    def reset(self):
-        self.invented = []
-        self.update_types()
 
     def add(self, term):
         self.invented.append(term)
         self.terms = self.axioms + self.invented
-
-    def __getitem__(self, x):
-        if isinstance(x, (int, np.int64)):
-            assert x >= 0
-            return self.terms[x]
-
-        if (ix := self.index(x)) is None:
-            raise ValueError(f'there is no {x} in {self.terms}')
-        return self.terms[ix]
-
-    def __len__(self):
-        return len(self.terms)
-
-    def __repr__(self):
-        return repr(self.terms)
+        self.prepare()
 
     def index(self, repr: str):
-        for ix, t in enumerate(self.terms):
-            if t.repr == repr:
+        for ix, term in enumerate(self.terms):
+            if term.repr == repr:
                 return ix
 
-        return None
+    def __getitem__(self, ix): # pretend this is list storing lambdas
+        return self.funcs[ix]
 
-    def __hash__(self):
-        return sum(hash(term[0]) for term in self.invented)
+    def reset(self):
+        self.invented = []
+        self.prepare()
 
-    def __mod__(self, expr: str):
-        return tolang(self, parse(expr))
-
-    def __call__(self, term: T):
-        if isinstance(term, str):
-            term = interpret(self, parse(term))
-
-        return evaltree(self, term)
-
-    def __lt__(self, term: T):
-        return grepr(self, term)
-
-
-def tolang(L: Language, ast: list) -> T:
-    match ast:
-        case [ast] if isinstance(ast, list):
-            return tolang(L, ast)
-        case [*ast] if len(ast):
-            return T(tolang(L, a) for a in ast)
-        case head if (ix := L.index(head)) is not None:
-            return ix
-        case hole if hole[0].isupper() or hole[0] == '.' or hole[0] == '$':
-            return hole
-        case debruijn if (ix := int(debruijn)) < 0:
-            return ix
-        case _:
-            raise ValueError(f"{ast}, it's all greek to me")
+    def __len__(self): return len(self.terms)
+    def __repr__(self): return repr(self.terms)
+    def __hash__(self): return sum(hash(term[0]) for term in self.invented)
 
 def make_views(L):
     views = {}
     # segragate atoms/funcs for each type
     for type, ixs in L.bytype.items():
-        atoms_ixs = [ix for ix in ixs if len(L[ix].tailtypes) == 0]
-        funcs_ixs = [ix for ix in ixs if len(L[ix].tailtypes) >= 1]
+        atoms_ixs = [ix for ix in ixs if len(L.terms[ix].tailtypes) == 0]
+        funcs_ixs = [ix for ix in ixs if len(L.terms[ix].tailtypes) >= 1]
         natoms = len(atoms_ixs)
         nfuncs = len(funcs_ixs)
         views[type] = TypeView(natoms, nfuncs, atoms_ixs, funcs_ixs)
@@ -129,7 +86,7 @@ def make_views(L):
         max_bit = 32
         masks, leaps = [], []
         for fix in typeview.funcs_ixs:
-            tailtypes = L[fix].tailtypes
+            tailtypes = L.terms[fix].tailtypes
             func_bitstring = copy(bitstring)
 
             while len(func_bitstring) < max_bit:
@@ -157,7 +114,7 @@ def maketree(L, type, n):
     natoms, nfuncs, atoms_ixs, funcs_ixs, func_mask, masks = L.views[type]
 
     if n < natoms:
-        return atoms_ixs[n]
+        return int(-atoms_ixs[n]-1)
 
     n -= natoms
 
@@ -168,7 +125,7 @@ def maketree(L, type, n):
     func_ix = select_mask(n, func_mask)
 
     func = funcs_ixs[func_ix]
-    tailtypes = L[func].tailtypes
+    tailtypes = L.terms[func].tailtypes
 
     tails = []
     for tailtype, (tail_mask, tail_last, tail_leap) in zip(tailtypes, masks[func_ix]):
@@ -177,209 +134,116 @@ def maketree(L, type, n):
 
         tails.append(maketree(L, tailtype, select_mask(n, tail_mask)))
 
-    return (func, *tails)
+    return (int(-func-1), *tails)
 
-def grepr(L, t):
-    if not isinstance(t, (T, int, np.int64)):
-        return t
+def shift(λ, s: int, l: int):
+    match λ:
+        case ('λ', body): return ('λ', shift(body, s, l+1))
+        case (f, x): return (shift(f, s, l), shift(x, s, l))
+        case int(ix): return ix if ix < l else ix + s
+        case _: return λ
 
-    if not isinstance(t, T):
-        t = T((t,))
+def subst(λ, n: int, e):
+    match λ:
+        case ('λ', body): return ('λ', subst(body, n+1, shift(e, 1, 0)))
+        case (f, *xs): return (subst(f, n, e), *[subst(x, n, e) for x in xs])
+        case int(ix): return e if n == ix else ix
+        case _: return λ
 
-    head, *tails = t
+def redux(λ, L=[]):
+    match λ:
+        case (('λ', f), x): return shift(subst(f, 0, shift(x, 1, 0)), -1, 0)
+        case ('λ', body): return ('λ', redux(body, L))
+        case (int(ix), *xs) if ix < 0: # fn from the library
+            fn = L[abs(ix+1)]
+            if isinstance(fn, tuple):
+                return redux((fn, *xs), L)
 
-    if isinstance(head, (int, np.int64)) and head < 0:
-        return str(t)
+            args = [reduce(x, L) for x in xs]
+            return fn(*args)
+        case (f, x): return (redux(f, L), redux(x, L))
+        case _: return λ
 
-    if isinstance(head, T):
-        if tails:
-            return f"(λ[{head}]. {' '.join([grepr(L, t) for t in tails])})"
-
-        return f"λ[{head}]"
-
-    if not tails:
-        return L[head].repr
-
-    return f"({L[head].repr} {' '.join([grepr(L, t) for t in tails])})"
-
-def length(t: T) -> int:
-    if not isinstance(t, tuple):
-        return 1
-
-    return sum(map(length, t))
-
-# this is overly complex because of some idiosyncraties i'm lazy to clean up
-def eval(L: Language, t: T, args=()):
-    if isinstance(t, (np.int64, int)):
-        if t < 0: # debruijn
-            if len(args) >= abs(t):
-                return args[t]
-            else:
-                return t
-
-        return L[t].head
-    else:
-        head, *tails = t
-        if isinstance(head, (np.int64, int)):
-            if head < 0: # debruijn
-                if len(args) == 0:
-                    return t
-                if len(args) >= abs(head):
-                    head = args[head]
-                else:
-                    head = head
-            else:
-                head = L[head].head
-
-        if len(tails) == 0: # atom
-            return head
-
-    tails = tuple([eval(L, tail, args) for tail in tails])
-
-    if isinstance(head, (np.int64, int)):
-        return (head, *tails)
-    if isinstance(head, T): # abstraction
-        return eval(L, head, tails)
-
-    return head(*tails)
-
-def isequal(t1, t2):
-    return t1.head == t2.head and all(isequal(tail1, tail2) for tail1, tail2 in zip(t1.tails, t2.tails))
-
-def rewrite(source, match, target, withargs=False):
-    if not source.tails:
-        return source
-
-    if isequalhole(source, match):
-        if withargs:
-            args = []
-            extractargs(source, match, args)
-
-            args = list(map(lambda g: rewrite(g, match, target, True), args))
-            # again reversed for - access
-            return T(target.head, tuple(reversed(args)))
-
-        return T(target.head)
-
-    newtails = [None] * len(source.tails)
-    for tind, tail in enumerate(source.tails):
-        if isequalhole(tail, match):
-            if withargs:
-                args = []
-                extractargs(tail, match, args)
-                # rewrite arguments themselves
-                # good that it's only one rewrite each for now
-                args = list(map(lambda g: rewrite(g, match, target, True), args))
-
-                newtails[tind] = T(target.head, tuple(reversed(args)))
-            else:
-                newtails[tind] = target
-        else:
-            newtails[tind] = rewrite(tail, match, target, withargs=withargs)
-
-    return source._replace(tails=tuple(newtails))
-
-def pevalg(L, t, args):
-    if isinstance(t, (int, np.int64)):
-        if t < 0:
-            return args[t]
-        else:
-            return t
-
-    head, *tails = t
-    if not tails:
-        return t
-
-    return (head, *(pevalg(L, tail, args) for tail in tails))
-
-def isnormal(L, t):
-    if isinstance(t, (int, np.int64)):
-        return t < len(L.axioms)
-
-    return all(isnormal(L, tt) for tt in t)
-
-def normalize(L, t):
-    if isinstance(t, (int, np.int64)):
-        if t < len(L.axioms):
-            return t
-        t = (t,)
-
-    head, *tails = t
-    if head >= len(L.axioms):
-        # get hiddentail
-        body = deepcopy(L[head].head)
-        # insert tails
-        body = pevalg(L, body, tails)
-
-        while not isnormal(L, body):
-            body = normalize(L, body)
-
-        return body
-
-    return (head, *[normalize(L, tail) for tail in tails])
+def reduce(λ, L=[], limit=100):
+    while (reduced := redux(λ, L)) != λ and limit:
+        λ = reduced
+        limit -= 1
+    if isinstance(λ, int) and λ < 0:
+        return L[abs(λ+1)]
+    return λ
 
 def parse(s: str):
-    "Parse a string into an AST"
+    "Parse string into ast"
     ast = []
-    ind = 0
-
-    while ind < len(s):
-        if s[ind] == '(':
+    ix = 0
+    while ix < len(s):
+        if s[ix] == '(':
             nopen = 1
-            sind = ind
-
+            six = ix
             while nopen != 0:
-                ind += 1
-                if s[ind] == ')':
+                ix += 1
+                if s[ix] == ')':
                     nopen -= 1
-                if s[ind] == '(':
+                elif s[ix] == '(':
                     nopen += 1
-
-            ast.append(parse(s[sind+1:ind]))
-
+            ast.append(parse(s[six+1:ix]))
         else:
-            term = []
-            while ind < len(s) and not s[ind].isspace():
-                term.append(s[ind])
-                ind += 1
-
-            if term:
-                ast.append(''.join(term))
-
-        ind += 1
-
+            chars = []
+            while ix < len(s) and not s[ix].isspace():
+                chars.append(s[ix])
+                ix += 1
+            if chars:
+                ast.append(''.join(chars))
+        ix += 1
     return ast
 
-def flatten(xs):
-    for x in xs:
-        yield from x
+def index(library, name): # covers ValueError and complements index
+    try: return -library.index(name)-1
+    except: return None
 
-def everysubtree(t):
-    qq = [t]
+def tolang(ast, L=[]):
+    "Convert the raw ast by replacing names with their indices from L"
+    match ast:
+        case [ast]: return tolang(ast, L)
+        case ['λ', body]: return ('λ', tolang(body, L))
+        case [*xs]: return tuple(tolang(x, L) for x in ast)
+        case name if (ix := index(L, name)) is not None: return ix
+        case hole if hole[0] == '?': return hole
+        case debruijn if debruijn[0] == '$': return int(debruijn[1:])
+        case _: raise ValueError(f"{ast}, it's all greek to me")
 
-    while qq:
-        n = qq.pop(0)
-        qq.extend(n.tails)
-        yield n
-
-def lent(t: T | str):
-    "natoms+nops, nargs"
-    # types
-    if isinstance(t, str):
-        return [0, 1]
-    # eclass
-    if isinstance(t, int):
-        return [1, 0]
-
-    return list(reduce(lambda acc, x: [acc[0] + x[0], acc[1] + x[1]], map(lent, t.tails), [1, 0]))
+def inlang(λ, L=[]):
+    match λ:
+        case (f, *xs): return f'({inlang(f, L)} {" ".join([inlang(x, L) for x in xs])})'
+        case int(ix) if ix < 0: return L.terms[abs(ix+1)].repr
+        case _: return repr(λ)
 
 if __name__ == '__main__':
+    succ = ('λ', ('λ', ('λ', (1, ((2, 1), 0)))))
+    zero = ('λ', ('λ', 0))
+    four = ('λ', ('λ', (1, (1, (1, (1, 0))))))
+    assert reduce((succ, (succ, (succ, (succ, zero))))) == four
+
+    Y = ('λ', (('λ', (1, (0, 0))), ('λ', (1, (0, 0)))))
+    assert redux(redux((Y, Y))) == (Y, redux((Y, Y)))
+
+    cons = ('λ', ('λ', ('λ', ((0, 2), 1))))
+    car = ('λ', (0, ('λ', ('λ', 1))))
+    cdr = ('λ', (0, ('λ', ('λ', 0))))
+
+    λ = ((cons, four), ((cons, four), four))
+    assert reduce((car, λ)) == reduce((car, (cdr, λ))) == reduce((cdr, (cdr, λ)))
+
+    L = [('λ', 0), lambda x: x**2, 10]
+    λ = (-2, (-2, (-1, -3)))
+    assert reduce(λ, L) == 10000
+
     assert length((1, 1, 1)) == 3
     assert length((((1,), (1,), (1,)), 1, 1)) == 5
 
-    assert parse("(abc (ijk (xyz)))") == [['abc', ['ijk', ['xyz']]]]
-    assert parse("(-111 000 +111)") == [['-111', '000', '+111']]
-    assert parse("(λ (x) (x x))") == [['λ', ['x'], ['x', 'x']]]
+    assert parse("abc (ijk (xyz))") == ['abc', ['ijk', ['xyz']]]
+    assert parse("(-111 000 111)") == [['-111', '000', '111']]
+    assert parse("(λ 0) (-1 (λ 0))") == [['λ', '0'], ['-1', ['λ', '0']]]
 
     TL = Language([
         Term(add, Type('Int'), [Type('Int'), Type('Int')], repr='+'),
@@ -387,54 +251,29 @@ if __name__ == '__main__':
         Term(10, Type('Int'), repr='10'),
     ], Type('Int'))
 
-    plus10 = Term(TL%"(+ -1 10)", Type('Int'), [Type('Int')], repr='+10')
+    plus10 = Term(tolang(parse("λ (+ $0 10)"), TL), Type('Int'), [Type('Int')], repr='+10')
     TL.add(plus10)
-    TL.update_types()
 
-    a0 = (0, 1, 1)
-    assert tolang(TL, parse("(+ 1 1)")) == a0
-    a1 = (0, a0, 1)
-    assert tolang(TL, parse("(+ (+ 1 1) 1)")) == a1
-    a2 = (0, a0, a0)
-    assert tolang(TL, parse("(+ (+ 1 1) (+ 1 1))")) == a2
+    assert reduce(tolang(parse("(+10 10)"), TL), TL) == 20
+    assert reduce(tolang(parse("(+10 ((λ $0) 10))"), TL), TL) == 20
+    assert reduce(tolang(parse("((λ ($0 10)) +10)"), TL), TL) == 20
+    assert reduce(tolang(parse("(((λ (λ ($1 $0))) +10) 10)"), TL), TL) == 20
 
-    am0 = (0, -1, 1)
-    assert tolang(TL, parse("(+ -1 1)")) == am0
-    am1 = (am0, a0)
-    assert tolang(TL, parse("((+ -1 1) (+ 1 1))")) == am1
-    am2 = (am0, am0)
-    assert tolang(TL, parse("((+ -1 1) (+ -1 1))")) == am2
-
-
-    assert eval(TL, TL%"(+ 1 1)") == 2
-    assert eval(TL, TL%"(+ (+ 1 1) 1)") == 3
-    assert eval(TL, TL%"(+ (+ 1 1) (+ 1 1))") == 4
-    assert eval(TL, TL%"((+ -1 1) 1)") == 2
-    assert eval(TL, TL%"((+ -1 -1) 1)") == 2
-    assert eval(TL, TL%"((+ -1 ((+ -1 -1) 1)) 10)") == 12
-    # hof
-    assert eval(TL, TL%"((-3 -2 -1) + 10 1)") == 11
-    assert eval(TL, TL%"((-3 -2 (-3 -1 -1)) + 10 1)") == 12
-    assert eval(TL, TL%"((-3 -2 (-3 -1 -1)) + ((-1 10 10) +) 1)") == 22
-    assert eval(TL, TL%"((-1) (-1))") == (-1,)
-    assert eval(TL, TL%"(((-1) (-1)) (-2))") == (-2,)
-
-    assert normalize(TL, TL%"(+10 1)") == TL%"(+ 1 10)"
-    assert normalize(TL, TL%"(+10 (+10 1))") == TL%"(+ (+ 1 10) 10)"
-
-    L = Language([
-        Term(0, Type('N'), repr='ø'),
-        Term('S', Type('N'), [Type('N')], [[]], repr='S'),
-    ], Type('N'))
+    SL = Language([
+        Term(0, Type('Int'), repr='ø'),
+        Term(lambda x: x + 1, Type('Int'), [Type('Int')], repr='S'),
+    ], Type('Int'))
 
     stime = time()
     trees = set()
-    for n in range(1000):
-        tree = maketree(L, L.type, n)
+    for n in range(10000):
+        tree = maketree(TL, TL.type, n)
+        out = reduce(tree, TL)
         if n < 100:
-            print(f'***** {n}', L<tree)
+            print(f'{n} {out}', inlang(tree, TL))
         trees.add(tree)
 
     print(f'{time() - stime:.2f}s')
     print(f'{len(trees)=}')
+
 
