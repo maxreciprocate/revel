@@ -1,13 +1,8 @@
 ```bash
-python3.10 render/cons.py tunes/barry-harris.mid # must have musescore binary in $PATH
+git clone https://github.com/reciprocated/revel -b decon
+# must have musescore binary in $PATH
+python3.10 decon.py tunes/barry-harris.mid
 ```
 
-<img src="renders/barry-harris-1.svg" width="100%">
-<br></br>
-<img src="renders/bill-evans-1-1.svg" width="100%">
-<br></br>
-<img src="renders/bill-evans-2-1.svg" width="100%">
-<br></br>
-<img src="renders/coltrane-1.svg" width="100%">
-
+<img src="renders/barry-harris-1.png" width="100%">
 
