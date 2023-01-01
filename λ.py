@@ -20,14 +20,14 @@ class Lam:
 
 @dataclass
 class App:
-    __match_args__ = ('f', 'xs')
-    def __init__(self, f, *xs):
-        self.f = f
+    __match_args__ = ('fn', 'xs')
+    def __init__(self, fn, *xs):
+        self.fn = fn
         self.xs = xs
 
-    def __repr__(self): return f'({repr(self.f)} {" ".join(repr(x) for x in self.xs)})'
-    def __hash__(self): return hash((self.f, self.xs))
-    def __eq__(self, λ): return isinstance(λ, App) and self.f == λ.f and self.xs == λ.xs
+    def __repr__(self): return f'({repr(self.fn)} {" ".join(repr(x) for x in self.xs)})'
+    def __hash__(self): return hash((self.fn, self.xs))
+    def __eq__(self, λ): return isinstance(λ, App) and self.fn == λ.fn and self.xs == λ.xs
 
 def shift(λ, s: int, l: int):
     match λ:
@@ -88,6 +88,7 @@ def encode(ast, L=[]):
     match ast:
         case [ast]: return encode(ast, L)
         case ['λ', body]: return Lam(encode(body, L))
+        case ['@', f, *xs]: return App(encode(f, L), *[encode(x, L) for x in xs]) # for conversion
         case [*xs]: return App(*[encode(x, L) for x in ast])
         case hole if hole[0] == '?': return hole
         case debruijn if debruijn[0] == '$': return Var(int(debruijn[1:]))
@@ -99,6 +100,7 @@ def decode(λ, L=[]):
     match λ:
         case App(f, xs): return f'({decode(f, L)} {" ".join([decode(x, L) for x in xs])})'
         case Ref(ix): return L.terms[ix].repr
+        case Lam(body): return f'(λ {decode(body, L)})'
         case _: return repr(λ)
 
 def length(λ) -> int:

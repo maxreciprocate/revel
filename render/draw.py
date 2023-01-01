@@ -15,28 +15,28 @@ PENDOWN = 0x7
 ROTATE = 0x8
 
 def move(distance, next):
-    return [(MOVE, distance)] + next
+    return ((MOVE, distance),) + next
 
 def neg(distance, next):
-    return [(NEGMOVE, distance)] + next
+    return ((NEGMOVE, distance),) + next
 
 def up(distance, next):
-    return [(UPMOVE, distance)] + next
+    return ((UPMOVE, distance),) + next
 
 def down(distance, next):
-    return [(DOWNMOVE, distance)] + next
+    return ((DOWNMOVE, distance),) + next
 
 def loop(n, brushes, next):
     return brushes * n + next
 
 def savex(brushes, next):
-    return [(SAVESTATE, SAVESTATE)] + brushes + [(RESUMESTATE, RESUMESTATE)] + next
+    return ((SAVESTATE, SAVESTATE),) + brushes + ((RESUMESTATE, RESUMESTATE),) + next
 
 def rotate(angle, next):
-    return [(ROTATE, angle)] + next
+    return ((ROTATE, angle),) + next
 
 def penup(brushes, next):
-    return [(PENUP, PENUP)] + brushes + [(PENDOWN, PENDOWN)] + next
+    return ((PENUP, PENUP),) + brushes + ((PENDOWN, PENDOWN),) + next
 
 @njit
 def bresenham(canvas, x0, y0, x1, y1):

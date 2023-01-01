@@ -1,8 +1,7 @@
 from blob import *
-from lang import Language
 from rich import print as pprint
 from tqdm.rich import tqdm
-from data import T, Term
+from enumerate import App, Library
 
 # back then, those were the times
 apply = lambda f, *args: f(*args)
@@ -118,12 +117,12 @@ class EGraph:
         self.hashcons[enode] = id
         return id
 
-    def addexpr(self, expr: T | str, retenode=False) -> EClass:
-        if not isinstance(expr, T):
+    def addexpr(self, expr: App | str, retenode=False) -> EClass:
+        if not isinstance(expr, App):
             return expr
 
-        tails = [self.addexpr(t) for t in expr.tails]
-        enode = ENode(expr.head, tuple(tails))
+        tails = [self.addexpr(t) for t in expr.xs]
+        enode = ENode(expr.fn, tuple(tails))
 
         if any(not isinstance(t, EClass) for t in tails):
             retenode = True
@@ -274,26 +273,26 @@ class EGraph:
             if saturated:
                 return len(matches)
 
-    def rewritesubst(self, subst: dict, term: T):
+    def rewritesubst(self, subst: dict, term: App):
         if isinstance(term, str):
             return subst[term]
 
-        if not term.tails:
-            return self.addenode(ENode(term.head, tuple()))
+        if not term.xs:
+            return self.addenode(ENode(term.fn, tuple()))
 
-        newtails = list(term.tails)
-        for ind, t in enumerate(term.tails):
+        newtails = list(term.xs)
+        for ind, t in enumerate(term.xs):
             if t in subst:
                 newtails[ind] = subst[t]
             else:
                 newtails[ind] = self.rewritesubst(subst, t)
 
-        return self.addenode(ENode(term.head, tuple(newtails)))
+        return self.addenode(ENode(term.fn, tuple(newtails)))
 
-    def extract(self, eclass, fn=T):
+    def extract(self, eclass, fn=App):
         cost, enode, _ = self.analyses[self.find(eclass)]
         tails = [self.extract(eclass, fn=fn)[1] for eclass in enode.tails]
-        return cost, fn(enode.head, tails=tuple(tails))
+        return cost, fn(enode.head, tuple(tails))
 
     def __len__(self):
         return len(self.parents)
@@ -308,7 +307,7 @@ class EGraph:
         pprint(self.parents)
         return ''
 
-def prettyenode(L: Language, G: EGraph, enode: ENode):
+def prettyenode(L: Library, G: EGraph, enode: ENode):
     match enode:
         case str(free):
             return free
@@ -324,27 +323,13 @@ def prettyenode(L: Language, G: EGraph, enode: ENode):
         case _:
             raise ValueError(f'malformed part {enode}: {type(enode)}')
 
-def preprocess(pattern, vars=[]):
-    if isinstance(pattern, str):
-        vars.insert(0, pattern)
-        return T(-len(vars))
-
-    if not pattern.tails:
-        return pattern
-
-    newtails = list(pattern.tails)
-    for ind, tail in enumerate(newtails):
-        newtails[ind] = preprocess(tail, vars)
-
-    return T(pattern.head, tuple(newtails))
-
 def termlength(G: EGraph, enode) -> int:
     return 1 + sum(G.analyses[t][0] for t in enode.tails)
 
 def rewrites(L, *rws):
     return [(L% lhs, L% rhs) for lhs, rhs in [rw.split('~>', 1) for rw in rws]]
 
-def fuse(L: Language, G: EGraph, fusewith: Tuple[int, int], fuseon: int, a: EClass, b: EClass) -> EClass:
+def fuse(L: Library, G: EGraph, fusewith: Tuple[int, int], fuseon: int, a: EClass, b: EClass) -> EClass:
     enodes = []
 
     c, enode, _ = G.analyses[G.find(a)]
@@ -388,7 +373,7 @@ def optimize(L, rws, expr):
     return L<term
 
 if __name__ == '__main__':
-    L = Language([
+    L = Library([
         Term(0, 'N', repr='0'),
         Term(1, 'N', repr='1'),
         Term(lambda x, y: x + y, 'N', ['N', 'N'], repr='+'),
@@ -429,7 +414,7 @@ if __name__ == '__main__':
         return [x] + xs
 
     # test fusing and conditional rewrites
-    L = Language([
+    L = Library([
         Term([], '<A>', repr='end'),
         Term([], '<L>', repr='ø'),
         *[Term(n, '<N>', repr=str(n)) for n in range(12)],
@@ -458,7 +443,7 @@ if __name__ == '__main__':
     assert G.addexpr(expr) == G.addexpr(L%"(a (+ 1 (+ 2 (+ 3 (+ 4 ø)))) end)")
 
     #::: Extraction
-    L = Language([
+    L = Library([
         Term('f', 'g', repr='f'),
         Term('g', 'g', repr='g')
     ], 0)
@@ -469,7 +454,7 @@ if __name__ == '__main__':
     assert G.extract(root)[1] == L%"(f f)"
 
     #::: Looping
-    L = Language([
+    L = Library([
         Term(partial(add, 1), 'N', ['N'], repr='s'),
         Term(partial(add, -1), 'N', ['N'], repr='d'),
         *[Term(n, 'N', repr=str(n)) for n in range(21)],
@@ -512,7 +497,7 @@ if __name__ == '__main__':
     assert term == L%"(. 10 (loop 5 s ø))"
 
     #::: Abstraction
-    L = Language([
+    L = Library([
         Term('f', '.', repr='f'),
         Term('g', '.', repr='g'),
         Term('app', '.', repr='@')
