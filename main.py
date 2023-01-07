@@ -19,7 +19,7 @@ def plotsolutions(L, solutions, epoch=0):
     canvas = zeros(solutions[0].canvas.shape, np.int8)
 
     N = len(solutions)
-    fig, axs = pyplot.subplots(N, 1, figsize=(32, N * 4))
+    fig, axs = pyplot.subplots(N, 1, figsize=(32, N * 4), constrained_layout=True)
     totalerror = sum(s.error for s in solutions)
 
     for s, ax in zip(solutions, axs):
@@ -42,13 +42,13 @@ def plotsolutions(L, solutions, epoch=0):
         ax.tick_params(left=False, bottom=False, labelbottom=False, labelleft=False)
 
         title = f"covered {npixels - nnotcovered}/{npixels}, extra {nredundant}, total {s.error}"
-        ax.set_title(f"{title}\n{decode(s.tree, L)}", size=20, y=1.15)
+        ax.set_title(f"{title}\n{decode(s.tree, L)}", size=20, y=1.12)
 
     suptitle = f'Epoch #{epoch} Total error = {totalerror}'
-    fig.suptitle(suptitle, size=20, y=1.05)
+    fig.suptitle(suptitle, size=20)
     print(suptitle)
 
-    pyplot.subplots_adjust(left=0.0, right=1, hspace=0.7)
+    pyplot.subplots_adjust(left=0.0, right=1, hspace=0.8)
     savefig(f"stash/{epoch}.png")
     pickle.dump((L, solutions), open(f"stash/{epoch}.pkl", "wb"))
 
@@ -59,7 +59,6 @@ def explore(L, S, numrange=(0, 10**6)):
     saved_errors = np.array([s.error for s in S])
     saved_states = np.array([s.state for s in S])
     saved_canvas = np.array([s.canvas for s in S])
-    saved_lengths = np.array([s.length for s in S])
 
     newtrees = [None] * N
     canvas = np.empty_like(saved_canvas)
@@ -71,23 +70,17 @@ def explore(L, S, numrange=(0, 10**6)):
     for nthtree in tbar:
         tree = growtree(L, L.type, nthtree)
         program = reduce(tree, L)
-        treelen = length(tree)
 
         canvas[:] = saved_canvas
         for ix in range(N):
             states[ix] = program(canvas[ix], saved_states[ix])
 
         np.sum(sources - canvas, axis=(1, 2), out=errors)
+        errors += length(tree) * 0.25
 
         for ix in np.where(errors < saved_errors)[0]:
             saved_errors[ix] = errors[ix]
-            saved_lengths[ix] = treelen
             newtrees[ix] = tree
-
-        for ix in np.where(errors == saved_errors)[0]:
-            if treelen < saved_lengths[ix]:
-                saved_lengths[ix] = treelen
-                newtrees[ix] = tree
 
     S = deepcopy(S)
     for ix, s in enumerate(S):
@@ -165,7 +158,6 @@ def compress(L, trees):
     print(os.popen('babble-this/target/release/babble-this').read())
     s = open('target/rec_expr').read()
     s = re.sub(r"l(\d+)", r"f\1", s)
-    print(s)
     ast = parse(s)[0]
 
     L.reset()
@@ -265,7 +257,7 @@ if __name__ == '__main__':
     ], type=Render)
 
     sources = renderalphabet('geo/Geo-Regular.ttf', (13, 13))
-    size = 10**6
+    size = 10**7
     ncores = os.cpu_count() // 2
 
     os.system('rm -rf stash && mkdir stash')
@@ -279,7 +271,8 @@ if __name__ == '__main__':
                 if s2.error < s1.error or (s2.error == s1.error and length(s2.tree) < length(s1.tree)):
                     solutions[ix] = s2
 
-        trees = [solution.tree.xs[0] for solution in solutions]
+        trees = [solution.tree for solution in solutions]
+        trees = [tree.xs[-1] if tree.fn.ix == L.index('render') else tree for tree in trees]
         normalized = [fixpoint(normalize, tree, L) for tree in trees]
         trees = compress(L, normalized)
 
