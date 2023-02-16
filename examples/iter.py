@@ -1,8 +1,8 @@
 import os
 import re
 import pickle
-from render.draw import *
-from render.font import *
+from draw import *
+from font import *
 from enumerate import Type, Library, Term, growtree
 from λ import *
 
@@ -257,7 +257,7 @@ if __name__ == '__main__':
     ], type=Render)
 
     sources = renderalphabet('geo/Geo-Regular.ttf', (13, 13))
-    size = 10**7
+    size = 10**6
     ncores = os.cpu_count() // 2
 
     os.system('rm -rf stash && mkdir stash')
