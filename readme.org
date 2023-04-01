@@ -1,0 +1,17 @@
+** Program synthesis for compact representation of data
+
+| λ.py         | lambda calculus with De Bruijn index |
+| egraph.py    | simplified e-graph implementation borrowing from [[https://www.philipzucker.com/a-simplified-egraph/][Zucker, 2021]] and [[https://github.com/egraphs-good/egg][Willsey et al., 2021]] |
+| enumerate.py | fast bigram conditioned DSL enumeration algorithm based on [[https://www.cs.virginia.edu/~lat7h/blog/posts/434.html][Tychonievich, 2013]]     |
+
+#+NAME:
+#+BEGIN_SRC bash
+git clone https://github.com/reciprocated/revel -b decon
+# must have musescore binary in $PATH
+python3.10 decon.py tunes/barry-harris.mid
+#+END_SRC
+
+[[renders/barry-harris.svg]]
+[[renders/bill-evans-1.svg]]
+[[renders/bill-evans-2.svg]]
+[[renders/coltrane.svg]]
